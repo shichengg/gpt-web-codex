@@ -126,6 +126,7 @@ function createTunnelSupervisor(options) {
   /** Remove an unpaired setup from memory after a failed pairing attempt. */
   async function discardConfiguration() {
     return enqueue(async () => {
+      const discardedCredentials = credentials;
       credentials = null;
       connectorName = null;
       failureMessage = undefined;
@@ -139,7 +140,13 @@ function createTunnelSupervisor(options) {
         state = 'stopped';
         return status();
       } catch (error) {
-        failureMessage = redactTunnelLog(error instanceof Error ? error.message : 'Tunnel discard failed');
+        // The in-memory setup is discarded before cleanup, but a failed owned
+        // stop can still repeat its key. Keep that private redaction context
+        // until the error has been made safe for status/snapshot publication.
+        failureMessage = redactKnownCredentials(
+          error instanceof Error ? error.message : 'Tunnel discard failed',
+          discardedCredentials,
+        );
         state = 'error';
         throw new Error(failureMessage);
       }
@@ -170,11 +177,11 @@ function createTunnelSupervisor(options) {
     if (owned === currentOwned) owned = null;
   }
 
-  function redactKnownCredentials(value) {
+  function redactKnownCredentials(value, knownCredentials = credentials) {
     let source = typeof value === 'string' ? value : 'Invalid tunnel diagnostic';
-    if (credentials) {
-      source = source.split(credentials.tunnelId).join('[REDACTED]');
-      source = source.split(credentials.runtimeKey).join('[REDACTED]');
+    if (knownCredentials) {
+      source = source.split(knownCredentials.tunnelId).join('[REDACTED]');
+      source = source.split(knownCredentials.runtimeKey).join('[REDACTED]');
     }
     return redactTunnelLog(source);
   }

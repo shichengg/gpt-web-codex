@@ -4,7 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
 const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
-const { RuntimeClient, redactAndBound } = require('./runtime-client.cjs');
+const { RuntimeClient } = require('./runtime-client.cjs');
 const { createRuntimeSupervisor } = require('./runtime-supervisor.cjs');
 const { createConnectorIdentity, validateTunnelSetup } = require('./connector-identity.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
@@ -318,7 +318,7 @@ async function createProfileController({
 function createActivityPublisher(getTrustedWebContents, maximumBytes = 4_096) {
   if (typeof getTrustedWebContents !== 'function') throw new TypeError('Activity publisher requires trusted web contents');
   return (entry) => {
-    const safeEntry = redactAndBound(typeof entry === 'string' ? entry : 'Invalid runtime activity entry', maximumBytes);
+    const safeEntry = redactTunnelLog(typeof entry === 'string' ? entry : 'Invalid runtime activity entry', maximumBytes);
     const webContents = getTrustedWebContents();
     if (webContents && typeof webContents.send === 'function' && !webContents.isDestroyed?.()) {
       webContents.send('launcher:log', safeEntry);

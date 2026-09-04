@@ -17,13 +17,14 @@ test('redacts and byte-bounds activity in the main process before renderer IPC',
   const sent = [];
   const publish = createActivityPublisher(() => ({ send: (channel, entry) => sent.push([channel, entry]) }), 128);
 
-  publish(`{"access_token":"private","client_secret":"hidden"} ${'界'.repeat(8_000)}`);
+  publish(`runtime_key=private-runtime-key {"access_token":"private","client_secret":"hidden"} ${'界'.repeat(8_000)}`);
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0][0], 'launcher:log');
   assert.equal(Buffer.byteLength(sent[0][1], 'utf8') <= 128, true);
   assert.match(sent[0][1], /\[REDACTED\]/);
   assert.equal(sent[0][1].includes('private') || sent[0][1].includes('hidden'), false);
+  assert.equal(sent[0][1].includes('private-runtime-key'), false);
 });
 
 test('redacts and sends lifecycle snapshots only through the snapshot IPC channel', () => {

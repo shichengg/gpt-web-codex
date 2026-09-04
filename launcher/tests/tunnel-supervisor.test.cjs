@@ -328,3 +328,48 @@ test('does not persist or retain a newly entered setup when pairing fails', asyn
   assert.equal(saved.includes(credentials.runtimeKey), false);
   assert.equal(saved.includes(credentials.tunnelId), false);
 });
+
+test('redacts a transient runtime key when identity persistence fails and Tunnel cleanup also fails', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-identity-failure-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const transientCredentials = {
+    tunnelId: `tunnel_${'b'.repeat(32)}`,
+    runtimeKey: 'transient-runtime-key-that-must-be-redacted',
+  };
+  const tunnel = createTunnelSupervisor({
+    getActiveRuntimeUrl: () => runtimeUrl,
+    runTunnel: async () => ({ alias: 'transient-pairing' }),
+    checkHealth: async () => true,
+    stopTunnel: async () => {
+      throw new Error(`Tunnel cleanup failed: ${transientCredentials.runtimeKey}`);
+    },
+  });
+  const identity = {
+    credentials: () => null,
+    name: () => connectorName,
+    snapshot: () => ({ connectorName, configured: false }),
+    configure: async () => { throw new Error('Connector identity persistence failed'); },
+  };
+  const runtime = {
+    getActiveRuntimeUrl: () => runtimeUrl,
+    call: async () => ({ state: 'running', workspace: null }),
+    subscribeLogs: () => () => {},
+  };
+  const published = [];
+  const controller = await createProfileController({
+    userDataPath: root,
+    shell: { openPath: async () => '' },
+    runtimeSupervisor: runtime,
+    tunnelSupervisor: tunnel,
+    connectorIdentity: identity,
+    publishSnapshot: (snapshot) => published.push(snapshot),
+  });
+
+  await assert.rejects(() => controller.setupTunnel(transientCredentials), /identity persistence failed/i);
+
+  const finalSnapshot = published.at(-1);
+  assert.equal(JSON.stringify(tunnel.status()).includes(transientCredentials.runtimeKey), false);
+  assert.equal(JSON.stringify(finalSnapshot).includes(transientCredentials.runtimeKey), false);
+  assert.equal(finalSnapshot.tunnelState, 'error');
+  assert.equal(finalSnapshot.tunnelMessage?.includes('[REDACTED]'), true);
+});
