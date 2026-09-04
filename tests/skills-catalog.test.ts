@@ -1,0 +1,63 @@
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, test } from 'vitest';
+import { SkillCatalog } from '../src/skills/catalog.js';
+
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function makeSkillsRoot() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+describe('SkillCatalog', () => {
+  test('lists only directories containing valid SKILL.md packages', async () => {
+    const skillsRoot = await makeSkillsRoot();
+    await mkdir(path.join(skillsRoot, 'review'));
+    await writeFile(path.join(skillsRoot, 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code safely.\n---\n\nReview instructions.\n');
+    await mkdir(path.join(skillsRoot, 'missing-metadata'));
+    await writeFile(path.join(skillsRoot, 'missing-metadata', 'SKILL.md'), '# no frontmatter');
+    await mkdir(path.join(skillsRoot, 'file-only'));
+    await writeFile(path.join(skillsRoot, 'README.md'), 'not a skill');
+
+    const catalog = await SkillCatalog.create(skillsRoot);
+
+    await expect(catalog.list()).resolves.toEqual([
+      { id: 'review', name: 'review', description: 'Review code safely.' },
+    ]);
+  });
+
+  test('reads an explicit skill and rejects an unregistered identifier', async () => {
+    const skillsRoot = await makeSkillsRoot();
+    await mkdir(path.join(skillsRoot, 'review'));
+    await writeFile(path.join(skillsRoot, 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code safely.\n---\n\nReview instructions.\n');
+    const catalog = await SkillCatalog.create(skillsRoot);
+
+    await expect(catalog.read('review')).resolves.toEqual({
+      id: 'review',
+      name: 'review',
+      description: 'Review code safely.',
+      content: 'Review instructions.\n',
+    });
+    await expect(catalog.read('../outside')).rejects.toThrow('Unknown skill');
+  });
+
+  test('rejects malformed frontmatter and does not expose an outside symlink', async () => {
+    const skillsRoot = await makeSkillsRoot();
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-outside-'));
+    temporaryRoots.push(outside);
+    await mkdir(path.join(outside, 'external'));
+    await writeFile(path.join(outside, 'external', 'SKILL.md'), '---\nname: external\ndescription: Outside.\n---\nsecret');
+    await symlink(path.join(outside, 'external'), path.join(skillsRoot, 'linked'), 'junction');
+    await mkdir(path.join(skillsRoot, 'malformed'));
+    await writeFile(path.join(skillsRoot, 'malformed', 'SKILL.md'), '---\nname: malformed\n---\nbody');
+    await expect(SkillCatalog.create(skillsRoot)).resolves.toBeDefined();
+    await expect((await SkillCatalog.create(skillsRoot)).list()).resolves.toEqual([]);
+  });
+});
