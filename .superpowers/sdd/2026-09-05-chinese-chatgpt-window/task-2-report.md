@@ -6,3 +6,9 @@
 - Added contract tests for defaults, validation, recovery, guide state, and IPC forwarding.
 
 Verification: focused contract tests pass. The existing suite has three exact-snapshot assertions that predate the new required `preferences` and `guide` fields and therefore require expectation updates.
+
+## Fix round 1
+
+- Updated the three legacy exact-snapshot assertions to retain exact runtime/Tunnel checks and separately require the default Chinese/system UI preferences and all five guide steps.
+- `node --test launcher/tests/registry-form.test.cjs launcher/tests/tunnel-supervisor.test.cjs`: passed, 19/19.
+- `npm --prefix launcher test`: passed, 96/96.

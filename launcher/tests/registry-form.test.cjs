@@ -9,6 +9,21 @@ const test = require('node:test');
 const { createRegistryStore, validateRegistryForProfile, validateRegistryDraft } = require('../electron/registry.cjs');
 const { createProfileController } = require('../electron/main.cjs');
 
+function assertDefaultUiState(snapshot, profileStatus = 'complete') {
+  assert.deepEqual(snapshot.preferences, {
+    language: 'zh-CN',
+    theme: 'system',
+    guideDismissedSteps: [],
+  });
+  assert.deepEqual(snapshot.guide, [
+    { id: 1, status: profileStatus, messageKey: profileStatus === 'complete' ? 'guide.profile.ready' : 'guide.profile.required' },
+    { id: 2, status: 'complete', messageKey: 'guide.skills.ready' },
+    { id: 3, status: 'unavailable', messageKey: 'guide.tunnel.unavailable' },
+    { id: 4, status: 'needs-action', messageKey: 'guide.connector.required' },
+    { id: 5, status: 'needs-action', messageKey: 'guide.runtime.required' },
+  ]);
+}
+
 const validDraft = Object.freeze({
   servers: [{ id: 'lint', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['check'], timeoutMs: 30_000 }],
 });
@@ -237,7 +252,11 @@ test('serializes start and profile selection so a stale profile cannot own the r
   const startSnapshot = await starting;
   await switching;
 
-  assert.deepEqual(startSnapshot, { state: 'running', workspace: await fs.realpath(oneRoot) });
+  const { preferences, guide, ...runtimeSnapshot } = startSnapshot;
+  assert.deepEqual(runtimeSnapshot, { state: 'running', workspace: await fs.realpath(oneRoot) });
+  assertDefaultUiState({ preferences, guide });
   assert.deepEqual(calls, [['stop'], ['start', 'one'], ['stop']]);
-  assert.deepEqual(await controller.snapshot(), { state: 'stopped', workspace: null });
+  const { preferences: stoppedPreferences, guide: stoppedGuide, ...stoppedSnapshot } = await controller.snapshot();
+  assert.deepEqual(stoppedSnapshot, { state: 'stopped', workspace: null });
+  assertDefaultUiState({ preferences: stoppedPreferences, guide: stoppedGuide });
 });

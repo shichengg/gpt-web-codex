@@ -9,6 +9,21 @@ const test = require('node:test');
 const { createTunnelSupervisor, redactTunnelLog } = require('../electron/tunnel-supervisor.cjs');
 const { createProfileController } = require('../electron/main.cjs');
 
+function assertDefaultUiState(snapshot, profileStatus = 'complete') {
+  assert.deepEqual(snapshot.preferences, {
+    language: 'zh-CN',
+    theme: 'system',
+    guideDismissedSteps: [],
+  });
+  assert.deepEqual(snapshot.guide, [
+    { id: 1, status: profileStatus, messageKey: profileStatus === 'complete' ? 'guide.profile.ready' : 'guide.profile.required' },
+    { id: 2, status: 'complete', messageKey: 'guide.skills.ready' },
+    { id: 3, status: 'unavailable', messageKey: 'guide.tunnel.unavailable' },
+    { id: 4, status: 'needs-action', messageKey: 'guide.connector.required' },
+    { id: 5, status: 'needs-action', messageKey: 'guide.runtime.required' },
+  ]);
+}
+
 const runtimeUrl = 'http://127.0.0.1:48765/mcp';
 const connectorName = 'GPT Web Codex';
 const credentials = Object.freeze({
@@ -262,7 +277,8 @@ test('stops the paired tunnel and publishes a safe snapshot when the owned runti
   ]);
 
   const snapshot = published.at(-1);
-  assert.deepEqual(snapshot, {
+  const { preferences, guide, ...runtimeSnapshot } = snapshot;
+  assert.deepEqual(runtimeSnapshot, {
     state: 'error',
     workspace: null,
     message: 'Runtime process exited unexpectedly (code 7)',
@@ -271,6 +287,7 @@ test('stops the paired tunnel and publishes a safe snapshot when the owned runti
     paired: false,
     connectorName,
   });
+  assertDefaultUiState({ preferences, guide });
   assert.equal(JSON.stringify(published).includes(credentials.runtimeKey), false);
   assert.equal(JSON.stringify(published).includes('private-runtime-token-123456'), false);
 });
@@ -313,7 +330,8 @@ test('does not persist or retain a newly entered setup when pairing fails', asyn
     ['discard'],
   ]);
   assert.equal(tunnel.configured, false);
-  assert.deepEqual(published.at(-1), {
+  const { preferences, guide, ...runtimeSnapshot } = published.at(-1);
+  assert.deepEqual(runtimeSnapshot, {
     state: 'running',
     workspace: null,
     tunnelState: 'stopped',
@@ -321,6 +339,7 @@ test('does not persist or retain a newly entered setup when pairing fails', asyn
     paired: false,
     connectorName,
   });
+  assertDefaultUiState({ preferences, guide }, 'needs-action');
   const saved = await fs.readFile(path.join(root, 'connector.json'), 'utf8').catch((error) => {
     if (error?.code === 'ENOENT') return '';
     throw error;
