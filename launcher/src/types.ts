@@ -7,8 +7,10 @@ export interface LauncherSnapshot {
   paired?: boolean;
   connectorName?: string;
   tunnelMessage?: string;
-  preferences?: LauncherUiPreferences;
-  guide?: GuideStep[];
+  /** Always present, renderer-safe UI configuration persisted by the launcher. */
+  preferences: LauncherUiPreferences;
+  /** Always present, renderer-safe setup state derived by the main process. */
+  guide: GuideStep[];
 }
 
 export type UiTheme = 'system' | 'light' | 'dark';

@@ -96,3 +96,14 @@ test('preferences IPC validates a full payload before routing it', async () => {
     /preferences/i,
   );
 });
+
+test('renderer exposes Chinese preferences and the five-step setup guide', async () => {
+  const appSource = await fs.readFile(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8');
+
+  assert.match(appSource, /简体中文/);
+  assert.match(appSource, /浅色/);
+  assert.match(appSource, /深色/);
+  assert.match(appSource, /打开 ChatGPT/);
+  assert.match(appSource, /清除 ChatGPT 登录状态/);
+  assert.match(appSource, /选择工作区[\s\S]*配置 Skills 与本地 MCP[\s\S]*检测本地运行时与兼容 Tunnel 客户端/);
+});

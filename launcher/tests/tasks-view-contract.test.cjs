@@ -9,6 +9,8 @@ test('Tasks & Logs queries only the narrow task bridge and polls the selected ta
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8');
 
   assert.match(source, /window\.gptWebCodex\.task\(taskId\.trim\(\)\)/);
+  assert.match(source, /window\.gptWebCodex\.cancelTask\(taskId\.trim\(\)\)/);
   assert.match(source, /setInterval/);
   assert.doesNotMatch(source, /callTool\s*\(/);
+  assert.doesNotMatch(source, /window\.gptWebCodex\.(?:runtime|runTask|listTasks)\s*\(/);
 });
