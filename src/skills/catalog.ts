@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
-import { lstat, open, readdir } from 'node:fs/promises';
+import { lstat, open, readdir, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import path from 'node:path';
 import { createPathPolicy, type PathPolicy } from '../security/paths.js';
 
@@ -63,8 +64,9 @@ export class SkillCatalog {
   }
 
   private async readPackage(id: string): Promise<ParsedSkill> {
-    const skillPath = await this.paths.resolve(path.join(id, 'SKILL.md'));
-    const source = await readSkillFile(skillPath);
+    const relativePath = path.join(id, 'SKILL.md');
+    const skillPath = await this.paths.resolve(relativePath);
+    const source = await readSkillFile(skillPath, relativePath, this.paths);
     const metadata = parseFrontmatter(source);
     return {
       id,
@@ -80,7 +82,7 @@ export class SkillCatalog {
  * platforms that support it, O_NOFOLLOW closes the final symlink race; the
  * lstat check also rejects static symlink packages on Windows.
  */
-async function readSkillFile(skillPath: string): Promise<string> {
+async function readSkillFile(skillPath: string, relativePath: string, paths: PathPolicy): Promise<string> {
   const fileInfo = await lstat(skillPath);
   if (!fileInfo.isFile()) {
     throw new Error('SKILL.md must be a regular file');
@@ -89,10 +91,31 @@ async function readSkillFile(skillPath: string): Promise<string> {
   const noFollow = constants.O_NOFOLLOW ?? 0;
   const handle = await open(skillPath, constants.O_RDONLY | noFollow);
   try {
-    return await handle.readFile('utf8');
+    const source = await handle.readFile('utf8');
+    // Re-resolve after reading: a replaced parent may have pointed the request
+    // outside the root while the already-open handle was still readable.
+    const currentPath = await paths.resolve(relativePath);
+    const [openedStats, currentStats] = await Promise.all([handle.stat(), stat(currentPath)]);
+    if (!sameFileIdentity(openedStats, currentStats)) {
+      throw new Error('SKILL.md changed while it was being read');
+    }
+    return source;
   } finally {
     await handle.close();
   }
+}
+
+/** Compare stable file identity when available, with metadata fallback on Windows. */
+export function sameFileIdentity(opened: Stats, current: Stats): boolean {
+  if (!opened.isFile() || !current.isFile()) {
+    return false;
+  }
+  if (opened.dev !== 0 && opened.ino !== 0 && current.dev !== 0 && current.ino !== 0) {
+    return opened.dev === current.dev && opened.ino === current.ino;
+  }
+  return opened.size === current.size
+    && opened.mtimeMs === current.mtimeMs
+    && opened.ctimeMs === current.ctimeMs;
 }
 
 interface Frontmatter {

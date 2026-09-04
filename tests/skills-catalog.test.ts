@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { SkillCatalog } from '../src/skills/catalog.js';
+import { sameFileIdentity, SkillCatalog } from '../src/skills/catalog.js';
 
 const temporaryRoots: string[] = [];
 
@@ -74,5 +74,20 @@ describe('SkillCatalog', () => {
 
     await expect(catalog.list()).resolves.toEqual([]);
     await expect(catalog.read('linked-file')).rejects.toThrow('Unknown skill');
+  });
+
+  test('rejects changed file identities', () => {
+    const file = {
+      isFile: () => true,
+      dev: 1,
+      ino: 2,
+      size: 10,
+      mtimeMs: 20,
+      ctimeMs: 30,
+    } as import('node:fs').Stats;
+    const replacement = { ...file, ino: 3 } as import('node:fs').Stats;
+
+    expect(sameFileIdentity(file, file)).toBe(true);
+    expect(sameFileIdentity(file, replacement)).toBe(false);
   });
 });
