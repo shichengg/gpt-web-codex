@@ -19,11 +19,28 @@ describe('managed runtime lifecycle', () => {
     expect(runtime.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   });
 
+  test('brackets an IPv6 loopback address in its MCP URL', async () => {
+    const config = await configWithPort(0);
+    config.host = '::1';
+    const runtime = await startRuntime(config);
+    runtimes.push(runtime);
+
+    expect(runtime.url).toMatch(/^http:\/\/\[::1\]:\d+\/mcp$/);
+  });
+
   test('closes the listener and reports its stopped snapshot', async () => {
     const runtime = await startRuntime(await configWithPort(0));
     runtimes.push(runtime);
 
     await expect(runtime.close()).resolves.toBeUndefined();
+    expect(runtime.snapshot()).toMatchObject({ state: 'stopped' });
+  });
+
+  test('shares one close operation between concurrent callers', async () => {
+    const runtime = await startRuntime(await configWithPort(0));
+    runtimes.push(runtime);
+
+    await expect(Promise.all([runtime.close(), runtime.close()])).resolves.toEqual([undefined, undefined]);
     expect(runtime.snapshot()).toMatchObject({ state: 'stopped' });
   });
 });

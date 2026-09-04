@@ -110,7 +110,9 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
     },
     get httpAddress() {
       const address = httpServer?.address();
-      return address && typeof address === 'object' ? `http://${address.address}:${address.port}/mcp` : undefined;
+      return address && typeof address === 'object'
+        ? `http://${formatHttpHost(address.address)}:${address.port}/mcp`
+        : undefined;
     },
     async close() {
       if (closed) return;
@@ -126,6 +128,10 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
       await dependencies.close?.();
     },
   };
+}
+
+function formatHttpHost(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
 }
 
 async function handleMcpRequest(request: IncomingMessage, response: ServerResponse, dependencies: ConnectorDependencies, runtime: McpRuntime): Promise<void> {
