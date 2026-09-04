@@ -22,7 +22,12 @@ test('preload exposes only declared launcher methods', () => {
     'start',
     'stop',
     'selectWorkspace',
+    'listProfiles',
+    'saveProfile',
+    'setActiveProfile',
+    'listSkills',
     'saveSkills',
+    'openSkillFolder',
     'saveMcpRegistry',
     'cancelTask',
     'doctor',
@@ -76,7 +81,8 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'gptWebCodex');
   assert.deepEqual(Object.keys(calls[0][1]), [
-    'snapshot', 'start', 'stop', 'selectWorkspace', 'saveSkills',
-    'saveMcpRegistry', 'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
+    'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
+    'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
+    'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
   ]);
 });

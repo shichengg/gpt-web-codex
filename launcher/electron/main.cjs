@@ -2,6 +2,8 @@
 
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { createProfileStore, validateProfile } = require('./profiles.cjs');
+const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
 const rendererEntry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -42,10 +44,43 @@ function createDefaultController() {
     stop: async () => snapshot,
     selectWorkspace: async () => snapshot,
     saveSkills: async () => snapshot,
+    listProfiles: async () => [],
+    saveProfile: async () => undefined,
+    setActiveProfile: async () => undefined,
+    listSkills: async () => [],
+    openSkillFolder: async () => undefined,
     saveMcpRegistry: async () => snapshot,
     cancelTask: async () => snapshot,
     doctor: async () => ({ checks: [] }),
     openLogs: async () => undefined,
+  });
+}
+
+async function createProfileController({ userDataPath, shell }) {
+  const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
+  const base = createDefaultController();
+
+  return Object.freeze({
+    ...base,
+    listProfiles: () => profiles.list(),
+    saveProfile: (profile) => profiles.save(profile),
+    setActiveProfile: (id) => profiles.setActive(id),
+    listSkills: async () => {
+      const active = await profiles.getActive();
+      return active ? scanSkills(active.skillsRoot) : [];
+    },
+    saveSkills: async (skillIds) => {
+      const active = await profiles.getActive();
+      if (!active) throw new Error('Select a workspace profile before saving Skill defaults');
+      const defaults = await saveSkillDefaults(active, skillIds);
+      await profiles.saveDefaults(active.id, defaults);
+      return base.snapshot();
+    },
+    openSkillFolder: async (skillId) => {
+      const active = await profiles.getActive();
+      if (!active) throw new Error('Select a workspace profile before opening a Skill folder');
+      return openSkillFolder(active.skillsRoot, skillId, shell);
+    },
   });
 }
 
@@ -69,6 +104,17 @@ function validateSkillIds(skillIds) {
     throw new TypeError('Skill IDs must be a unique bounded list of valid IDs');
   }
   return skillIds;
+}
+
+function validateWorkspaceProfileDraft(profile) {
+  return validateProfile(profile);
+}
+
+function validateProfileId(profileId) {
+  if (typeof profileId !== 'string' || !IDENTIFIER.test(profileId)) {
+    throw new TypeError('Workspace profile ID must be a bounded identifier');
+  }
+  return profileId;
 }
 
 function validateMcpRegistryDraft(draft) {
@@ -111,9 +157,23 @@ function registerIpcHandlers(ipcMain, controller = createDefaultController(), ge
     'launcher:start': guarded((args) => { requireNoPayload(args, 'start'); return controller.start(); }),
     'launcher:stop': guarded((args) => { requireNoPayload(args, 'stop'); return controller.stop(); }),
     'launcher:select-workspace': guarded((args) => { requireNoPayload(args, 'selectWorkspace'); return controller.selectWorkspace(); }),
+    'launcher:list-profiles': guarded((args) => { requireNoPayload(args, 'listProfiles'); return controller.listProfiles(); }),
+    'launcher:save-profile': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('saveProfile requires one payload');
+      return controller.saveProfile(validateWorkspaceProfileDraft(args[0]));
+    }),
+    'launcher:set-active-profile': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('setActiveProfile requires one payload');
+      return controller.setActiveProfile(validateProfileId(args[0]));
+    }),
+    'launcher:list-skills': guarded((args) => { requireNoPayload(args, 'listSkills'); return controller.listSkills(); }),
     'launcher:save-skills': guarded((args) => {
       if (args.length !== 1) throw new TypeError('saveSkills requires one payload');
       return controller.saveSkills(validateSkillIds(args[0]));
+    }),
+    'launcher:open-skill-folder': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('openSkillFolder requires one payload');
+      return controller.openSkillFolder(validateSkillIds([args[0]])[0]);
     }),
     'launcher:save-mcp-registry': guarded((args) => {
       if (args.length !== 1) throw new TypeError('saveMcpRegistry requires one payload');
@@ -153,9 +213,10 @@ function boot() {
   const electron = require('electron');
   const { app, ipcMain } = electron;
   let mainWindow;
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     mainWindow = createMainWindow(electron);
-    registerIpcHandlers(ipcMain, createDefaultController(), () => mainWindow?.webContents);
+    const controller = await createProfileController({ userDataPath: app.getPath('userData'), shell: electron.shell });
+    registerIpcHandlers(ipcMain, controller, () => mainWindow?.webContents);
     app.on('activate', () => {
       if (electron.BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createMainWindow(electron);
@@ -177,11 +238,14 @@ module.exports = {
   ALLOWED_EXTERNAL_ORIGINS,
   boot,
   createMainWindow,
+  createProfileController,
   isAllowedExternalUrl,
   rendererEntryUrl,
   registerIpcHandlers,
   validateMcpRegistryDraft,
+  validateProfileId,
   validateSkillIds,
+  validateWorkspaceProfileDraft,
   validateTaskId,
   windowOptions,
 };
