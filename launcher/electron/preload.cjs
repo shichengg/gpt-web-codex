@@ -40,9 +40,17 @@ function createPreloadApi(ipcRenderer) {
   });
 }
 
-if (require.main === module) {
-  const { contextBridge, ipcRenderer } = require('electron');
+function exposeBridge(electron) {
+  const { contextBridge, ipcRenderer } = electron;
+  if (!contextBridge || !ipcRenderer) {
+    return false;
+  }
   contextBridge.exposeInMainWorld('gptWebCodex', createPreloadApi(ipcRenderer));
+  return true;
 }
 
-module.exports = { IPC_CHANNELS, createPreloadApi };
+// Sandboxed Electron preload scripts have a restricted synthetic require and
+// no reliable require.main. Loading this module is the preload entrypoint.
+exposeBridge(require('electron'));
+
+module.exports = { IPC_CHANNELS, createPreloadApi, exposeBridge };
