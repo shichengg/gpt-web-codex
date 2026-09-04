@@ -150,19 +150,23 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
   request.once('aborted', abortOnDisconnect);
   request.once('close', () => { if (request.aborted || !request.complete) abortOnDisconnect(); });
   response.once('close', abortOnDisconnect);
-  const body = await readJson(request);
-  const server = createMcpServer(dependencies, runtime, requestController.signal);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const session = { server, transport };
-  runtime.sessions.add(session);
+  let server: McpServer | undefined;
+  let transport: StreamableHTTPServerTransport | undefined;
+  let session: ActiveMcpSession | undefined;
   try {
+    const body = await readJson(request);
+    if (requestController.signal.aborted) throw new Error('Request aborted');
+    server = createMcpServer(dependencies, runtime, requestController.signal);
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    session = { server, transport };
+    runtime.sessions.add(session);
     await server.connect(transport);
     await transport.handleRequest(request, response, body);
   } finally {
-    runtime.sessions.delete(session);
+    if (session) runtime.sessions.delete(session);
     runtime.requests.delete(request);
     runtime.controllers.delete(requestController);
-    await Promise.allSettled([server.close(), transport.close()]);
+    if (server && transport) await Promise.allSettled([server.close(), transport.close()]);
   }
 }
 

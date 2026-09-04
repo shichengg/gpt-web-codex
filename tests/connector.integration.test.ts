@@ -125,6 +125,22 @@ describe('authenticated connector', () => {
     expect(server.httpAddress).toBeUndefined();
   });
 
+  test('cleans up malformed and oversized HTTP uploads before serving later MCP calls', async () => {
+    const { server } = await fixture(true);
+    const address = new URL(server.httpAddress!);
+    expect(await postMcp(address, '{')).toBe(500);
+    expect(await postMcp(address, 'x'.repeat(1024 * 1024 + 1))).toBe(500);
+    const client = new Client({ name: 'cleanup-test', version: '0.1.0' });
+    const transport = new StreamableHTTPClientTransport(address, { requestInit: { headers: { authorization: 'Bearer secret' } } });
+    try {
+      await client.connect(transport);
+      await expect(client.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   test('propagates close cancellation to an active Codex operation', async () => {
     const blockingCodex = {
       submit: async (_request: unknown, signal?: AbortSignal) => await new Promise<{ id: string; state: 'cancelled'; createdAt: string; updatedAt: string }>((resolve) => {
@@ -160,3 +176,20 @@ describe('authenticated connector', () => {
     await server.close();
   });
 });
+
+function postMcp(address: URL, body: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: address.hostname,
+      port: Number(address.port),
+      path: address.pathname,
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve(response.statusCode ?? 0));
+    });
+    request.once('error', reject);
+    request.end(body);
+  });
+}

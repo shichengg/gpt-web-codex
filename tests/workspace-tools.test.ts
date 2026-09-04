@@ -90,4 +90,16 @@ describe('workspace tools', () => {
       scan: { files: 2, entries: 2, bytes: 12 },
     });
   });
+
+  test('never reads more than the remaining global search byte budget', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    await writeFile(path.join(root, 'large.txt'), 'needle'.repeat(20_000));
+    const tools = createWorkspaceTools(root, await createPathPolicy(root), { maxSearchFiles: 10, maxSearchEntries: 10, maxSearchBytes: 1, maxSearchMs: 5_000 });
+
+    await expect(tools.search('needle')).resolves.toMatchObject({
+      truncated: true,
+      scan: { files: 1, entries: 1, bytes: 1 },
+    });
+  });
 });

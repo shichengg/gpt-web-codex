@@ -36,6 +36,9 @@ export class CodexRunner {
   private readonly timeoutMs: number;
   private readonly cancelGraceMs: number;
   private readonly executions = new Map<string, Execution>();
+  private readonly submissions = new Set<Promise<RunningTask>>();
+  private closing = false;
+  private closePromise: Promise<void> | undefined;
 
   constructor(private readonly options: CodexRunnerOptions) {
     this.spawn = options.spawn ?? nodeSpawn;
@@ -51,10 +54,24 @@ export class CodexRunner {
   }
 
   async submit(request: CodexRequest, signal?: AbortSignal): Promise<RunningTask> {
+    if (this.closing) throw new Error('Codex runner is closing');
+    const submission = this.submitWhenOpen(request, signal);
+    this.submissions.add(submission);
+    try {
+      return await submission;
+    } finally {
+      this.submissions.delete(submission);
+    }
+  }
+
+  private async submitWhenOpen(request: CodexRequest, signal?: AbortSignal): Promise<RunningTask> {
     validateRequest(request, this.options);
     const skillContent = await this.loadSkills(request.skillIds);
+    if (this.closing) throw new Error('Codex runner is closing');
     const task = await this.options.store.create(request);
+    if (this.closing) return this.options.store.complete(task.id, 'cancelled', 'Connector is shutting down');
     const running = await this.options.store.complete(task.id, 'running');
+    if (this.closing) return this.options.store.complete(task.id, 'cancelled', 'Connector is shutting down');
     const prompt = assemblePrompt(request.prompt, skillContent, this.options.maxSkillContextBytes ?? 64 * 1024);
     let child: SpawnedChild;
     try {
@@ -77,7 +94,17 @@ export class CodexRunner {
   }
 
   async close(): Promise<void> {
-    await Promise.allSettled([...this.executions.values()].map((execution) => execution.cancel('cancelled', 'Connector is shutting down')));
+    if (this.closePromise) return this.closePromise;
+    this.closing = true;
+    this.closePromise = this.drain();
+    return this.closePromise;
+  }
+
+  private async drain(): Promise<void> {
+    while (this.submissions.size > 0 || this.executions.size > 0) {
+      await Promise.allSettled([...this.submissions]);
+      await Promise.allSettled([...this.executions.values()].map((execution) => execution.cancel('cancelled', 'Connector is shutting down')));
+    }
   }
 
   private manage(id: string, child: SpawnedChild): Execution {

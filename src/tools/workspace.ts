@@ -121,7 +121,9 @@ export function createWorkspaceTools(root: string, paths: PathPolicy, configured
             }
             if (!entry.isFile()) continue;
             try {
-              const source = await readVerifiedText(relativeEntry, paths);
+              const remainingBytes = limits.maxSearchBytes - scan.bytes;
+              if (remainingBytes <= 0) { truncated = true; return; }
+              const source = await readVerifiedText(relativeEntry, paths, Math.min(WORKSPACE_LIMITS.maxBytes, remainingBytes));
               scan.files += 1;
               scan.bytes += source.bytes;
               const lines = source.text.text.split(/\r?\n/);
@@ -150,13 +152,13 @@ export function createWorkspaceTools(root: string, paths: PathPolicy, configured
   };
 }
 
-async function readVerifiedText(relativePath: string, paths: PathPolicy): Promise<{ text: BoundedText; bytes: number }> {
+async function readVerifiedText(relativePath: string, paths: PathPolicy, maxBytes = WORKSPACE_LIMITS.maxBytes): Promise<{ text: BoundedText; bytes: number }> {
   const filePath = await paths.resolve(relativePath);
   const initial = await lstat(filePath);
   if (!initial.isFile() || initial.isSymbolicLink()) throw new Error('path must be a regular file');
   const handle = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const buffer = Buffer.alloc(WORKSPACE_LIMITS.maxBytes);
+    const buffer = Buffer.alloc(maxBytes);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     const contents = buffer.subarray(0, bytesRead);
     if (contents.includes(0)) throw new Error('binary files are not searchable or readable');

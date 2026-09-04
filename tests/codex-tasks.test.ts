@@ -14,10 +14,10 @@ describe('TaskStore', () => {
   test('persists bounded status and redacts secret-shaped output', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-tasks-'));
     roots.push(root);
-    const store = new TaskStore(root, { maxOutputBytes: 32 });
+    const store = new TaskStore(root, { maxOutputBytes: 2048 });
 
     const task = await store.create({ prompt: 'test', skillIds: [] });
-    await store.appendOutput(task.id, 'token=abc123 api_key=secret password=hunter2 {"token":"json-secret","authorization":"Bearer json-header"} Authorization: Bearer header-secret');
+    await store.appendOutput(task.id, 'token=abc123 api_key=secret password=hunter2 {"token":"json-secret","authorization":"Bearer json-header","Authorization":"Bearer json-header-two"} Authorization: Bearer header-secret');
 
     await expect(store.get(task.id)).resolves.toMatchObject({
       id: task.id,
@@ -27,6 +27,7 @@ describe('TaskStore', () => {
     await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('secret');
     await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('header-secret');
     await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('json-header');
+    await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('json-header-two');
   });
 
   test('supports explicit lifecycle completion and rejects unknown tasks', async () => {

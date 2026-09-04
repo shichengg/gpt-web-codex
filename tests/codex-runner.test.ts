@@ -81,6 +81,30 @@ describe('CodexRunner', () => {
     child.emit('close', null, 'SIGTERM');
     await expect(cancelling).resolves.toMatchObject({ state: 'cancelled' });
   });
+
+  test('does not spawn a child after close begins while an in-flight submit is loading Skills', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    roots.push(workspaceRoot, stateDir);
+    let releaseSkill!: () => void;
+    const skillLoaded = new Promise<void>((resolve) => { releaseSkill = resolve; });
+    let spawned = false;
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: {
+        read: async () => { await skillLoaded; return { id: 'review', name: 'review', description: 'review', content: 'review' }; },
+      } as unknown as SkillCatalog,
+      store: new TaskStore(stateDir),
+      spawn: () => { spawned = true; return fakeChild(); },
+    });
+    const pending = runner.submit({ prompt: 'run', skillIds: ['review'] });
+    const closing = runner.close();
+
+    releaseSkill();
+    await closing;
+    await expect(pending).rejects.toThrow('closing');
+    expect(spawned).toBe(false);
+  });
   test('spawns the fixed executable with the configured cwd and without a shell', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));

@@ -125,6 +125,7 @@ function redact(value: string): string {
   return value
     .replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
     .replace(/(["'])(token|api_key|password)\1\s*:\s*(["'])[^"']*\3/gi, '$1$2$1:[REDACTED]')
+    .replace(/(["'])authorization\1\s*:\s*(["'])bearer\s+[^"']*\2/gi, '$1authorization$1:$2Bearer [REDACTED]$2')
     .replace(/\bauthorization\s*:\s*bearer\s+[^\s,;]+/gi, 'Authorization: Bearer [REDACTED]');
 }
 
