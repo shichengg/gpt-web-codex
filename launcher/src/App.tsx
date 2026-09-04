@@ -144,6 +144,16 @@ const dictionary = {
     dismiss: "关闭此步骤",
     guideDismissed: "引导步骤已关闭。",
     guideDismissError: "无法保存引导步骤状态。",
+    guideProfileReady: "工作区配置已就绪。",
+    guideProfileRequired: "请选择并保存工作区配置。",
+    guideSkillsReady: "Skills 或本地 MCP 已配置。",
+    guideSkillsRequired: "请配置 Skills 或本地 MCP。",
+    guideTunnelPaired: "Tunnel 已与本地运行时配对。",
+    guideTunnelRequired: "请启动运行时并配对兼容 Tunnel 客户端。",
+    guideConnectorReady: "连接器已就绪。",
+    guideConnectorRequired: "请先完成运行时和 Tunnel 配对。",
+    guideRuntimeReady: "本地运行时正在运行且已配对。",
+    guideRuntimeRequired: "请启动本地运行时并完成 Tunnel 配对。",
     tunnelUnavailable:
       "Doctor 未找到兼容的 Tunnel 客户端；请安装或配置兼容客户端后重新检测。",
     diagnostics: "本地诊断",
@@ -269,6 +279,16 @@ const dictionary = {
     dismiss: "Dismiss step",
     guideDismissed: "Guide step dismissed.",
     guideDismissError: "Unable to save guide state.",
+    guideProfileReady: "Workspace profile is ready.",
+    guideProfileRequired: "Choose and save a workspace profile.",
+    guideSkillsReady: "Skills or local MCP is configured.",
+    guideSkillsRequired: "Configure Skills or local MCP.",
+    guideTunnelPaired: "Tunnel is paired with the local runtime.",
+    guideTunnelRequired: "Start the runtime and pair a compatible Tunnel client.",
+    guideConnectorReady: "Connector is ready.",
+    guideConnectorRequired: "Complete runtime and Tunnel pairing first.",
+    guideRuntimeReady: "The local runtime is running and paired.",
+    guideRuntimeRequired: "Start the local runtime and complete Tunnel pairing.",
     tunnelUnavailable:
       "Doctor did not find a compatible Tunnel client. Install or configure one, then check again.",
     diagnostics: "Local diagnostics",
@@ -280,6 +300,20 @@ const dictionary = {
     logsOpenError: "Unable to open the local diagnostic log folder.",
   },
 } as const;
+
+const guideMessageKeys: Record<string, TextKey> = {
+  "guide.profile.ready": "guideProfileReady",
+  "guide.profile.required": "guideProfileRequired",
+  "guide.skills.ready": "guideSkillsReady",
+  "guide.skills.required": "guideSkillsRequired",
+  "guide.tunnel.unavailable": "tunnelUnavailable",
+  "guide.tunnel.paired": "guideTunnelPaired",
+  "guide.tunnel.required": "guideTunnelRequired",
+  "guide.connector.ready": "guideConnectorReady",
+  "guide.connector.required": "guideConnectorRequired",
+  "guide.runtime.ready": "guideRuntimeReady",
+  "guide.runtime.required": "guideRuntimeRequired",
+};
 
 export default function App() {
   const [view, setView] = useState<View>("home");
@@ -1103,11 +1137,7 @@ function GuideStepCard({
           {t(status[step.status])}
         </span>
       </div>
-      <p>
-        {step.status === "unavailable" && step.id === 3
-          ? t("tunnelUnavailable")
-          : step.messageKey}
-      </p>
+      <p>{t(guideMessageKeys[step.messageKey] ?? "guideNeedsAction")}</p>
       <div className="actions">
         {step.id === 4 && (
           <button
