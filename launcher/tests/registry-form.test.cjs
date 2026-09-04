@@ -17,7 +17,7 @@ function assertDefaultUiState(snapshot, profileStatus = 'complete') {
   });
   assert.deepEqual(snapshot.guide, [
     { id: 1, status: profileStatus, messageKey: profileStatus === 'complete' ? 'guide.profile.ready' : 'guide.profile.required' },
-    { id: 2, status: 'complete', messageKey: 'guide.skills.ready' },
+    { id: 2, status: 'needs-action', messageKey: 'guide.skills.required' },
     { id: 3, status: 'unavailable', messageKey: 'guide.tunnel.unavailable' },
     { id: 4, status: 'needs-action', messageKey: 'guide.connector.required' },
     { id: 5, status: 'needs-action', messageKey: 'guide.runtime.required' },

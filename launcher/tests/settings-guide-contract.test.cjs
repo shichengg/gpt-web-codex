@@ -52,9 +52,28 @@ test('guide state identifies profile and unavailable Tunnel setup without claimi
 
   assert.equal(guide.length, 5);
   assert.deepEqual(guide[0], { id: 1, status: 'needs-action', messageKey: 'guide.profile.required' });
-  assert.equal(guide[1].status, 'complete');
+  assert.equal(guide[1].status, 'needs-action');
   assert.equal(guide[2].status, 'unavailable');
   assert.notEqual(guide[3].status, 'complete');
+});
+
+test('guide state derives Skills and MCP completion from saved configuration', () => {
+  const base = { snapshot: { paired: false }, profiles: [{ id: 'work' }], doctor: { checks: [] } };
+
+  assert.equal(guideStateFrom({ ...base, skills: [], mcpRegistry: { servers: [] } })[1].status, 'needs-action');
+  assert.equal(guideStateFrom({ ...base, skills: ['review'], mcpRegistry: { servers: [] } })[1].status, 'complete');
+  assert.equal(guideStateFrom({ ...base, skills: [], mcpRegistry: { servers: [{ id: 'local' }] } })[1].status, 'complete');
+});
+
+test('guide state keeps an ordinary Tunnel error actionable', () => {
+  const guide = guideStateFrom({
+    snapshot: { paired: false },
+    profiles: [{ id: 'work' }],
+    skills: ['review'],
+    doctor: { checks: [{ id: 'tunnel', status: 'error', message: 'OpenAI Tunnel client reported an error.' }] },
+  });
+
+  assert.equal(guide[2].status, 'needs-action');
 });
 
 test('preferences IPC validates a full payload before routing it', async () => {

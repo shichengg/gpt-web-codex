@@ -145,15 +145,23 @@ async function createProfileController({
       ...(snapshot.message ? { message: snapshot.message } : {}),
       ...tunnelSnapshot(),
     };
-    const [savedProfiles, preferences, doctor] = await Promise.all([
+    const activeProfile = await profiles.getActive();
+    const [savedProfiles, preferences, doctor, mcpRegistry] = await Promise.all([
       profiles.list(),
       launcherState.preferences.read(),
       createDoctorReport(),
+      activeProfile ? registryFor(activeProfile.id).load() : { servers: [] },
     ]);
     return {
       ...runtime,
       preferences,
-      guide: guideStateFrom({ snapshot: runtime, profiles: savedProfiles, doctor }),
+      guide: guideStateFrom({
+        snapshot: runtime,
+        profiles: savedProfiles,
+        skills: activeProfile?.enabledSkillIds ?? [],
+        mcpRegistry,
+        doctor,
+      }),
     };
   }
 
@@ -284,7 +292,7 @@ async function createProfileController({
       if (!active) throw new Error('Select a workspace profile before saving Skill defaults');
       const defaults = await saveSkillDefaults(active, skillIds);
       await profiles.saveDefaults(active.id, defaults);
-      return base.snapshot();
+      return publishCurrentSnapshot();
     },
     openSkillFolder: async (skillId) => {
       const active = await profiles.getActive();
@@ -425,14 +433,16 @@ function sanitizeLauncherSnapshot(snapshot, maximumBytes) {
   return Object.freeze(safe);
 }
 
-function guideStateFrom({ snapshot = {}, profiles = [], doctor = {} } = {}) {
+function guideStateFrom({ snapshot = {}, profiles = [], skills = [], mcpRegistry = {}, doctor = {} } = {}) {
   const hasProfile = Array.isArray(profiles) && profiles.length > 0;
   const tunnelCheck = Array.isArray(doctor.checks) ? doctor.checks.find((check) => check?.id === 'tunnel') : undefined;
-  const tunnelUnavailable = tunnelCheck?.message?.toLowerCase().includes('unavailable') || tunnelCheck?.status === 'error';
+  const tunnelUnavailable = tunnelCheck?.message === 'OpenAI Tunnel client is unavailable in this launcher build.';
+  const hasSkillDefaults = Array.isArray(skills) && skills.length > 0;
+  const hasMcpServers = Array.isArray(mcpRegistry?.servers) && mcpRegistry.servers.length > 0;
   const paired = snapshot.paired === true;
   return [
     { id: 1, status: hasProfile ? 'complete' : 'needs-action', messageKey: hasProfile ? 'guide.profile.ready' : 'guide.profile.required' },
-    { id: 2, status: 'complete', messageKey: 'guide.skills.ready' },
+    { id: 2, status: hasSkillDefaults || hasMcpServers ? 'complete' : 'needs-action', messageKey: hasSkillDefaults || hasMcpServers ? 'guide.skills.ready' : 'guide.skills.required' },
     { id: 3, status: tunnelUnavailable ? 'unavailable' : (paired ? 'complete' : 'needs-action'), messageKey: tunnelUnavailable ? 'guide.tunnel.unavailable' : (paired ? 'guide.tunnel.paired' : 'guide.tunnel.required') },
     { id: 4, status: paired ? 'complete' : 'needs-action', messageKey: paired ? 'guide.connector.ready' : 'guide.connector.required' },
     { id: 5, status: snapshot.state === 'running' && paired ? 'complete' : 'needs-action', messageKey: snapshot.state === 'running' && paired ? 'guide.runtime.ready' : 'guide.runtime.required' },

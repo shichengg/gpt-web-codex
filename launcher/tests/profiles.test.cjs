@@ -177,7 +177,9 @@ test('active profile defaults are catalog-validated before private persistence',
   await controller.saveProfile({ id: 'one', ...workspace, enabledSkillIds: [] });
   await controller.setActiveProfile('one');
   await assert.rejects(() => controller.saveSkills(['outside']), /Unknown Skill/);
-  await controller.saveSkills(['review']);
+  const snapshot = await controller.saveSkills(['review']);
 
   assert.deepEqual((await controller.listProfiles())[0].enabledSkillIds, ['review']);
+  assert.deepEqual(snapshot.preferences, { language: 'zh-CN', theme: 'system', guideDismissedSteps: [] });
+  assert.equal(snapshot.guide[1].status, 'complete');
 });
