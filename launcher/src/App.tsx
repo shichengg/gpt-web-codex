@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { LauncherSnapshot, SkillSummary, WorkspaceProfile } from './types';
+import type { LauncherSnapshot, McpRegistryDraft, McpServerDraft, SkillSummary, WorkspaceProfile } from './types';
 
 const views = ['Status', 'Workspace', 'Skills', 'MCP', 'Tasks & Logs', 'Settings & Diagnostics'] as const;
 type View = (typeof views)[number];
@@ -72,7 +72,9 @@ export default function App() {
         {view === 'Status' && <Status snapshot={snapshot} onInvoke={invoke} />}
         {view === 'Workspace' && <Workspace profiles={profiles} onChanged={refreshWorkspaceData} />}
         {view === 'Skills' && <Skills profiles={profiles} skills={skills} onChanged={refreshWorkspaceData} />}
-        {!['Status', 'Workspace', 'Skills'].includes(view) && <Placeholder view={view as Exclude<View, 'Status' | 'Workspace' | 'Skills'>} />}
+        {view === 'MCP' && <Mcp />}
+        {view === 'Tasks & Logs' && <TasksAndLogs />}
+        {view === 'Settings & Diagnostics' && <Placeholder view="Settings & Diagnostics" />}
         {error && <p className="error" role="alert">{error}</p>}
       </section>
     </main>
@@ -177,10 +179,115 @@ function Status({ snapshot, onInvoke }: { snapshot: LauncherSnapshot; onInvoke: 
   );
 }
 
-function Placeholder({ view }: { view: Exclude<View, 'Status' | 'Workspace' | 'Skills'> }) {
-  const descriptions: Record<Exclude<View, 'Status' | 'Workspace' | 'Skills'>, string> = {
-    MCP: 'Manage validated local stdio MCP server entries.',
-    'Tasks & Logs': 'Review bounded task activity and redacted runtime logs.',
+function Mcp() {
+  const [id, setId] = useState('');
+  const [command, setCommand] = useState('');
+  const [args, setArgs] = useState('');
+  const [allowedTools, setAllowedTools] = useState('');
+  const [timeoutMs, setTimeoutMs] = useState('30000');
+  const [servers, setServers] = useState<McpServerDraft[]>([]);
+  const [message, setMessage] = useState<string>();
+
+  function addServer(event: React.FormEvent) {
+    event.preventDefault();
+    const next: McpServerDraft = {
+      id: id.trim(),
+      command: command.trim(),
+      args: parseLines(args),
+      allowedTools: parseLines(allowedTools),
+      timeoutMs: Number(timeoutMs),
+    };
+    if (!next.id || !next.command || next.allowedTools.length === 0 || !Number.isInteger(next.timeoutMs)) {
+      setMessage('Enter an ID, local command, at least one allowed tool, and an integer timeout.');
+      return;
+    }
+    if (servers.some((server) => server.id === next.id)) {
+      setMessage('Each MCP server needs a unique ID.');
+      return;
+    }
+    setServers((current) => [...current, next]);
+    setId('');
+    setCommand('');
+    setArgs('');
+    setAllowedTools('');
+    setTimeoutMs('30000');
+    setMessage('Server entry added to the unsaved registry.');
+  }
+
+  async function save() {
+    try {
+      const draft: McpRegistryDraft = { servers };
+      await window.gptWebCodex.saveMcpRegistry(draft);
+      setMessage('Local MCP registry saved. The runtime will reload this validated registry.');
+    } catch {
+      setMessage('The registry was not saved. Check the local command, tools, and timeout.');
+    }
+  }
+
+  return <section className="panel stack">
+    <h2>Local stdio MCP registry</h2>
+    <p>Only explicit local stdio commands and named tools are accepted. URLs, wildcard tools, credentials, and environment settings are not supported.</p>
+    <form className="stack" onSubmit={addServer}>
+      <label>Server ID<input onChange={(event) => setId(event.target.value)} required value={id} /></label>
+      <label>Local command<input onChange={(event) => setCommand(event.target.value)} required value={command} /></label>
+      <label>Arguments (one per line)<textarea onChange={(event) => setArgs(event.target.value)} value={args} /></label>
+      <label>Allowed tools (one per line)<textarea onChange={(event) => setAllowedTools(event.target.value)} required value={allowedTools} /></label>
+      <label>Timeout (ms)<input min="1000" onChange={(event) => setTimeoutMs(event.target.value)} required type="number" value={timeoutMs} /></label>
+      <div className="actions"><button type="submit">Add server</button></div>
+    </form>
+    {servers.length > 0 && <ul className="plain-list">
+      {servers.map((server) => <li key={server.id}><code>{server.id}</code> <span>{server.command} · {server.allowedTools.join(', ')}</span>
+        <button className="secondary" onClick={() => setServers((current) => current.filter((item) => item.id !== server.id))} type="button">Remove</button></li>)}
+    </ul>}
+    <div className="actions"><button onClick={() => void save()} type="button">Save local registry</button></div>
+    {message && <p>{message}</p>}
+  </section>;
+}
+
+function TasksAndLogs() {
+  const [taskId, setTaskId] = useState('');
+  const [message, setMessage] = useState<string>();
+  const [logs, setLogs] = useState<string[]>([]);
+
+  useEffect(() => window.gptWebCodex.onLog((entry) => {
+    const safe = rendererSafeText(entry);
+    setLogs((current) => [safe, ...current].slice(0, 64));
+  }), []);
+
+  async function cancel() {
+    try {
+      await window.gptWebCodex.cancelTask(taskId.trim());
+      setMessage('Cancellation requested for the task.');
+    } catch {
+      setMessage('Unable to cancel this task. Enter its bounded task ID.');
+    }
+  }
+
+  return <section className="panel stack">
+    <h2>Tasks and logs</h2>
+    <p>Only recent redacted runtime activity is shown here. Chat content and credentials are not retained.</p>
+    <label>Task ID<input onChange={(event) => setTaskId(event.target.value)} value={taskId} /></label>
+    <div className="actions"><button disabled={!taskId.trim()} onClick={() => void cancel()} type="button">Cancel task</button></div>
+    {message && <p>{message}</p>}
+    <h3>Recent runtime logs</h3>
+    {logs.length === 0 ? <p>No recent runtime activity.</p> : <ul className="plain-list">{logs.map((entry, index) => <li key={`${index}-${entry}`}><pre>{entry}</pre></li>)}</ul>}
+  </section>;
+}
+
+function parseLines(value: string): string[] {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function rendererSafeText(value: unknown): string {
+  const text = typeof value === 'string' ? value : 'Invalid runtime activity entry';
+  const redacted = text
+    .replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/\bauthorization\s*:\s*bearer\s+[^\s,;]+/gi, 'Authorization: Bearer [REDACTED]');
+  return redacted.length <= 4096 ? redacted : `${redacted.slice(0, 4095)}…`;
+}
+
+function Placeholder({ view }: { view: 'Settings & Diagnostics' }) {
+  const descriptions: Record<'Settings & Diagnostics', string> = {
     'Settings & Diagnostics': 'Run local checks and export redacted diagnostics.',
   };
   return <section className="panel"><p>{descriptions[view]}</p></section>;

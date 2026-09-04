@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
+const { createRegistryStore, validateRegistryDraft } = require('./registry.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
@@ -56,9 +57,21 @@ function createDefaultController() {
   });
 }
 
-async function createProfileController({ userDataPath, shell }) {
+async function createProfileController({ userDataPath, shell, runtimeSupervisor }) {
   const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
   const base = createDefaultController();
+  const registries = new Map();
+
+  function registryFor(profileId) {
+    let registry = registries.get(profileId);
+    if (!registry) {
+      // profileId is validated on save and when selected; it is never a path
+      // supplied directly by the renderer to this private per-user directory.
+      registry = createRegistryStore(path.join(userDataPath, 'mcp-registries', `${profileId}.json`));
+      registries.set(profileId, registry);
+    }
+    return registry;
+  }
 
   return Object.freeze({
     ...base,
@@ -88,6 +101,15 @@ async function createProfileController({ userDataPath, shell }) {
       const active = await profiles.getActive();
       if (!active) throw new Error('Select a workspace profile before opening a Skill folder');
       return openSkillFolder(active, skillId, shell);
+    },
+    saveMcpRegistry: async (draft) => {
+      const active = await profiles.getActive();
+      if (!active) throw new Error('Select a workspace profile before saving an MCP registry');
+      // Save only a fully validated registry. A runtime reload is deliberately
+      // sequenced after the atomic write so it can never run a rejected draft.
+      await registryFor(active.id).save(validateRegistryDraft(draft));
+      await runtimeSupervisor?.restart?.(active);
+      return base.snapshot();
     },
   });
 }
@@ -125,28 +147,7 @@ function validateProfileId(profileId) {
   return profileId;
 }
 
-function validateMcpRegistryDraft(draft) {
-  if (!draft || typeof draft !== 'object' || Array.isArray(draft) ||
-    Object.keys(draft).some((key) => key !== 'servers') || !Array.isArray(draft.servers) || draft.servers.length > 32) {
-    throw new TypeError('MCP registry draft must contain a bounded servers list');
-  }
-
-  for (const server of draft.servers) {
-    if (!server || typeof server !== 'object' || Array.isArray(server) ||
-      Object.keys(server).some((key) => !['id', 'command', 'args', 'allowedTools', 'timeoutMs'].includes(key)) ||
-      typeof server.id !== 'string' || !IDENTIFIER.test(server.id) ||
-      typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512 ||
-      !Array.isArray(server.args) || server.args.length > 64 ||
-      !server.args.every((arg) => typeof arg === 'string' && arg.length <= 1024) ||
-      !Array.isArray(server.allowedTools) || server.allowedTools.length === 0 || server.allowedTools.length > 128 ||
-      new Set(server.allowedTools).size !== server.allowedTools.length ||
-      !server.allowedTools.every((tool) => typeof tool === 'string' && IDENTIFIER.test(tool)) ||
-      !Number.isInteger(server.timeoutMs) || server.timeoutMs < 100 || server.timeoutMs > 300000) {
-      throw new TypeError('MCP registry server has invalid allowedTools or bounded fields');
-    }
-  }
-  return draft;
-}
+const validateMcpRegistryDraft = validateRegistryDraft;
 
 function validateTaskId(taskId) {
   if (typeof taskId !== 'string' || !IDENTIFIER.test(taskId)) {

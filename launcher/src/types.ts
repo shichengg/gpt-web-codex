@@ -24,6 +24,19 @@ export interface SkillSummary {
   preview: string;
 }
 
+/** A local stdio MCP entry. URLs, environment variables, and credentials never cross IPC. */
+export interface McpServerDraft {
+  id: string;
+  command: string;
+  args: string[];
+  allowedTools: string[];
+  timeoutMs: number;
+}
+
+export interface McpRegistryDraft {
+  servers: McpServerDraft[];
+}
+
 export interface GptWebCodexApi {
   snapshot(): Promise<LauncherSnapshot>;
   start(): Promise<LauncherSnapshot>;
@@ -35,7 +48,7 @@ export interface GptWebCodexApi {
   listSkills(): Promise<SkillSummary[]>;
   saveSkills(skillIds: string[]): Promise<LauncherSnapshot>;
   openSkillFolder(skillId: string): Promise<void>;
-  saveMcpRegistry(draft: unknown): Promise<LauncherSnapshot>;
+  saveMcpRegistry(draft: McpRegistryDraft): Promise<LauncherSnapshot>;
   cancelTask(taskId: string): Promise<LauncherSnapshot>;
   doctor(): Promise<DiagnosticReport>;
   openLogs(): Promise<void>;
