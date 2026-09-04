@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   createMainWindow,
+  bindChatGptCleanup,
   createActivityPublisher,
   createSnapshotPublisher,
   installQuitGuard,
@@ -261,4 +262,16 @@ test('window prevents navigation, denies popups, and denies permission requests'
   await Promise.resolve();
   assert.deepEqual(externalUrls, ['https://platform.openai.com/docs']);
   permissionHandler(null, 'notifications', (granted) => assert.equal(granted, false));
+});
+
+test('rebuilt macOS main windows retain ChatGPT cleanup binding', () => {
+  let closed = 0;
+  let listener;
+  const mainWindow = {
+    on: (event, callback) => { if (event === 'closed') listener = callback; },
+  };
+  const chatWindow = { close: () => { closed += 1; } };
+  bindChatGptCleanup(mainWindow, () => chatWindow);
+  listener();
+  assert.equal(closed, 1);
 });

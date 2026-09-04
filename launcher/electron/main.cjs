@@ -513,6 +513,11 @@ function createMainWindow(electron) {
   return window;
 }
 
+function bindChatGptCleanup(mainWindow, getChatGptWindow) {
+  mainWindow.on('closed', () => getChatGptWindow?.()?.close?.());
+  return mainWindow;
+}
+
 /** Quit only after the owned child confirms it has stopped. */
 async function stopRuntimeBeforeQuit(runtimeSupervisor, quit, tunnelSupervisor) {
   try {
@@ -579,7 +584,7 @@ function boot() {
       shell: electron.shell,
       logger: console,
     });
-    mainWindow.on('closed', () => chatGptWindow?.close());
+    bindChatGptCleanup(mainWindow, () => chatGptWindow);
     const userDataPath = app.getPath('userData');
     const runtimeEntry = runtimeEntryForApp(app);
     runtimeSupervisor = createRuntimeSupervisor({
@@ -614,7 +619,7 @@ function boot() {
     }, () => mainWindow?.webContents);
     app.on('activate', () => {
       if (electron.BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createMainWindow(electron);
+        mainWindow = bindChatGptCleanup(createMainWindow(electron), () => chatGptWindow);
       }
     });
   });
@@ -714,6 +719,7 @@ module.exports = {
   boot,
   createActivityPublisher,
   createMainWindow,
+  bindChatGptCleanup,
   createProfileController,
   createSnapshotPublisher,
   bootDiagnosticMode,

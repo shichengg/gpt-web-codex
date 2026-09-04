@@ -7,7 +7,7 @@ const {
   isAllowedChatGptUrl,
 } = require('../electron/chatgpt-window.cjs');
 
-function createDoubles() {
+function createDoubles({ deferredLoad = false } = {}) {
   const session = {
     fromPartitionCalls: [],
     clearStorageDataCalls: [],
@@ -28,9 +28,14 @@ function createDoubles() {
     this.events = {};
     this.webContents = {
       events: {},
+      loadCalls: [],
       on: (name, handler) => { this.webContents.events[name] = handler; },
       setWindowOpenHandler: (handler) => { this.popupAllowed = handler; },
-      loadURL: async (url) => { this.loadedURL = url; },
+      loadURL: (url) => {
+        this.webContents.loadCalls.push(url);
+        this.loadedURL = url;
+        return deferredLoad ? new Promise(() => {}) : Promise.resolve();
+      },
     };
     this.on = (name, handler) => { this.events[name] = handler; };
     this.isDestroyed = () => false;
@@ -79,12 +84,43 @@ test('blocks untrusted navigation, permission, download and popup targets', asyn
   assert.equal(downloadPrevented, true);
 });
 
+test('denies allowed popup targets so they cannot navigate without guards', async () => {
+  const { BrowserWindow, session } = createDoubles();
+  const controller = createChatGptWindowController({ BrowserWindow, session, logger: {} });
+  await controller.open();
+  assert.deepEqual(BrowserWindow.last.popupAllowed('https://accounts.google.com/'), { action: 'deny' });
+});
+
+test('prevents a malicious navigation during an allowed navigation load', async () => {
+  const { BrowserWindow, session } = createDoubles({ deferredLoad: true });
+  const controller = createChatGptWindowController({ BrowserWindow, session, logger: {} });
+  const opening = controller.open();
+  const window = BrowserWindow.last;
+  let trustedPrevented = false;
+  window.webContents.events['will-navigate'](
+    { preventDefault: () => { trustedPrevented = true; } },
+    'https://chatgpt.com/c/trusted',
+  );
+  let maliciousPrevented = false;
+  window.webContents.events['will-navigate'](
+    { preventDefault: () => { maliciousPrevented = true; } },
+    'https://evil.example/',
+  );
+  assert.equal(trustedPrevented, true);
+  assert.equal(maliciousPrevented, true);
+  assert.deepEqual(window.webContents.loadCalls, ['https://chatgpt.com/c/trusted']);
+  void opening;
+});
+
 test('allows only HTTPS ChatGPT and login hosts', () => {
   assert.equal(isAllowedChatGptUrl('https://chatgpt.com/c/abc'), true);
   assert.equal(isAllowedChatGptUrl('https://sub.openai.com/auth'), true);
   assert.equal(isAllowedChatGptUrl('http://chatgpt.com/'), false);
   assert.equal(isAllowedChatGptUrl('https://evil.example/'), false);
   assert.equal(isAllowedChatGptUrl('not a url'), false);
+  assert.equal(isAllowedChatGptUrl('https://login.accounts.google.com/'), false);
+  assert.equal(isAllowedChatGptUrl('https://foo.login.microsoftonline.com/'), false);
+  assert.equal(isAllowedChatGptUrl('https://sub.appleid.apple.com/'), false);
 });
 
 test('clears only the dedicated ChatGPT session', async () => {
