@@ -14,7 +14,7 @@ import { createGitTools } from '../src/tools/git.js';
 import { createWorkspaceTools } from '../src/tools/workspace.js';
 import { createServer, type ConnectorServer, type ConnectorDependencies } from '../src/server.js';
 
-async function fixture(http = false, codexOverride?: CodexRunner): Promise<{ server: ConnectorServer; auth: { token: string } }> {
+async function fixture(http = false, codexOverride?: CodexRunner, transportOverride?: McpTransport): Promise<{ server: ConnectorServer; auth: { token: string } }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-'));
   const skillsRoot = path.join(root, 'skills');
   const stateDir = path.join(root, 'state');
@@ -48,7 +48,7 @@ async function fixture(http = false, codexOverride?: CodexRunner): Promise<{ ser
     git: createGitTools(root, paths),
     skills: catalog,
     mcp: registry,
-    mcpTransport: transport,
+    mcpTransport: transportOverride ?? transport,
     codex: codexOverride ?? runner,
     tasks: taskStore,
     ...(http ? { http: { host: '127.0.0.1', port: 0 } } : {}),
@@ -136,5 +136,27 @@ describe('authenticated connector', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await server.close();
     await expect(pending).resolves.toMatchObject({ state: 'cancelled' });
+  });
+
+  test('aborts an in-flight MCP operation when its HTTP response disconnects', async () => {
+    let observedAbort = false;
+    const transport: McpTransport = {
+      call: async (_server, _tool, _input, signal) => await new Promise((resolve) => {
+        signal?.addEventListener('abort', () => { observedAbort = true; resolve({ cancelled: true }); }, { once: true });
+      }),
+    };
+    const { server } = await fixture(true, undefined, transport);
+    const client = new Client({ name: 'disconnect-test', version: '0.1.0' });
+    const clientTransport = new StreamableHTTPClientTransport(new URL(server.httpAddress!), {
+      requestInit: { headers: { authorization: 'Bearer secret' } },
+    });
+    await client.connect(clientTransport);
+    const pending = client.callTool({ name: 'call_mcp_tool', arguments: { serverId: 'lint', tool: 'check', input: {} } }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await client.close();
+    for (let attempt = 0; attempt < 20 && !observedAbort; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    await pending;
+    expect(observedAbort).toBe(true);
+    await server.close();
   });
 });
