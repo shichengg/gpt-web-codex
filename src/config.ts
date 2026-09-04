@@ -21,7 +21,7 @@ const configSchema = z.object({
   host: z.string().min(1).refine((value) => value === '127.0.0.1' || value === 'localhost' || value === '::1', {
     message: 'host must be loopback-only',
   }),
-  port: z.number().int().min(1).max(65535),
+  port: z.number().int().min(0).max(65535),
   workspaceRoot: z.string().trim().min(1),
   skillsRoot: z.string().trim().min(1),
   stateDir: z.string().trim().min(1),

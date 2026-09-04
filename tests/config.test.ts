@@ -40,13 +40,21 @@ describe('loadConfig', () => {
   });
 
   test('rejects ports outside the valid range', () => {
-    for (const port of ['0', '65536', 'not-a-number']) {
+    for (const port of ['-1', '65536', 'not-a-number']) {
       expect(() => loadConfig({
         CODEX_WORKSPACE_ROOT: 'C:/work',
         CODEX_CONNECTOR_TOKEN: 'test-token',
         CODEX_PORT: port,
       })).toThrow(ConfigError);
     }
+  });
+
+  test('allows port zero so a launcher can request an ephemeral loopback port', () => {
+    expect(loadConfig({
+      CODEX_WORKSPACE_ROOT: 'C:/work',
+      CODEX_CONNECTOR_TOKEN: 'test-token',
+      CODEX_PORT: '0',
+    }).port).toBe(0);
   });
 
   test('rejects whitespace-only required values', () => {
