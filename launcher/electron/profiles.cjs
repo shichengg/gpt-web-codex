@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { createJsonStateStore } = require('./state.cjs');
 
 const PROFILE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -57,7 +59,7 @@ function validateState(state) {
 
 async function createProfileStore(filePath) {
   const state = createJsonStateStore(filePath);
-  let current = validateState(await state.read(emptyState()));
+  let current = validateState(await state.read(emptyState(), validateState));
 
   async function persist(next) {
     const validated = validateState(next);
@@ -81,11 +83,15 @@ async function createProfileStore(filePath) {
       ? null
       : copyProfile(current.profiles.find((profile) => profile.id === current.activeProfileId)),
     save: async (profile) => {
-      const validated = validateProfile(profile);
-      const profiles = current.profiles.filter((candidate) => candidate.id !== validated.id);
-      profiles.push(validated);
+      const validated = await canonicalizeProfile(profile);
+      const existing = current.profiles.find((candidate) => candidate.id === validated.id);
+      const saved = existing
+        ? { ...validated, enabledSkillIds: [...existing.enabledSkillIds] }
+        : validated;
+      const profiles = current.profiles.filter((candidate) => candidate.id !== saved.id);
+      profiles.push(saved);
       await persist({ ...current, profiles });
-      return copyProfile(validated);
+      return copyProfile(saved);
     },
     setActive: async (id) => {
       validateProfileId(id);
@@ -108,6 +114,46 @@ async function createProfileStore(filePath) {
   });
 }
 
+/** Resolve profile roots on every filesystem operation, not just on save. */
+async function resolveProfileRoots(profile) {
+  const validated = validateProfile(profile);
+  const workspaceRoot = await canonicalDirectory(validated.workspaceRoot, 'Workspace root');
+  const configuredSkillsRoot = await canonicalDirectory(validated.skillsRoot, 'Skills root');
+  const expectedSkillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  const expectedInfo = await fs.lstat(expectedSkillsRoot).catch(() => undefined);
+  if (!expectedInfo || !expectedInfo.isDirectory() || expectedInfo.isSymbolicLink()) {
+    throw new Error('Skills root must be the workspace .codex/skills directory');
+  }
+  const canonicalSkillsRoot = await fs.realpath(expectedSkillsRoot);
+  if (!samePath(configuredSkillsRoot, canonicalSkillsRoot)) {
+    throw new Error('Skills root must be contained in the workspace .codex/skills directory');
+  }
+  return { ...validated, workspaceRoot, skillsRoot: canonicalSkillsRoot };
+}
+
+async function canonicalizeProfile(profile) {
+  return resolveProfileRoots(profile);
+}
+
+async function canonicalDirectory(value, label) {
+  try {
+    const resolved = await fs.realpath(value);
+    const info = await fs.stat(resolved);
+    if (!info.isDirectory()) throw new Error('not a directory');
+    return resolved;
+  } catch {
+    throw new Error(`${label} must be an existing directory`);
+  }
+}
+
+function samePath(left, right) {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
 function validateProfileId(id) {
   if (typeof id !== 'string' || !PROFILE_ID.test(id)) {
     throw new TypeError('Workspace profile ID must be a bounded identifier');
@@ -118,4 +164,4 @@ function copyProfile(profile) {
   return { ...profile, enabledSkillIds: [...profile.enabledSkillIds] };
 }
 
-module.exports = { PROFILE_ID, createProfileStore, validateProfile };
+module.exports = { PROFILE_ID, createProfileStore, resolveProfileRoots, validateProfile };

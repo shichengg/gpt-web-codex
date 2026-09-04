@@ -67,7 +67,7 @@ async function createProfileController({ userDataPath, shell }) {
     setActiveProfile: (id) => profiles.setActive(id),
     listSkills: async () => {
       const active = await profiles.getActive();
-      return active ? scanSkills(active.skillsRoot) : [];
+      return active ? scanSkills(active) : [];
     },
     saveSkills: async (skillIds) => {
       const active = await profiles.getActive();
@@ -79,7 +79,7 @@ async function createProfileController({ userDataPath, shell }) {
     openSkillFolder: async (skillId) => {
       const active = await profiles.getActive();
       if (!active) throw new Error('Select a workspace profile before opening a Skill folder');
-      return openSkillFolder(active.skillsRoot, skillId, shell);
+      return openSkillFolder(active, skillId, shell);
     },
   });
 }

@@ -9,31 +9,26 @@ const test = require('node:test');
 const { createProfileStore } = require('../electron/profiles.cjs');
 const { createProfileController, registerIpcHandlers, rendererEntryUrl } = require('../electron/main.cjs');
 
-async function makeProfileStore() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profiles-'));
-  return {
-    root,
-    store: await createProfileStore(path.join(root, 'profiles.json')),
-  };
+async function makeWorkspace(parent, name) {
+  const workspaceRoot = path.join(parent, name);
+  const skillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  await fs.mkdir(skillsRoot, { recursive: true });
+  return { workspaceRoot, skillsRoot };
 }
 
-test('stores Skills defaults per workspace without retaining runtime state', async (t) => {
+async function makeProfileStore() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profiles-'));
+  return { root, store: await createProfileStore(path.join(root, 'profiles.json')) };
+}
+
+test('stores Skills defaults per canonical workspace without retaining runtime state', async (t) => {
   const { root, store } = await makeProfileStore();
   t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const one = await makeWorkspace(root, 'one');
+  const two = await makeWorkspace(root, 'two');
 
-  await store.save({
-    id: 'one',
-    workspaceRoot: 'C:/work/one',
-    skillsRoot: 'C:/work/one/.codex/skills',
-    enabledSkillIds: [],
-  });
-  await store.save({
-    id: 'two',
-    workspaceRoot: 'C:/work/two',
-    skillsRoot: 'C:/work/two/.codex/skills',
-    enabledSkillIds: [],
-  });
-
+  await store.save({ id: 'one', ...one, enabledSkillIds: [] });
+  await store.save({ id: 'two', ...two, enabledSkillIds: [] });
   await store.saveDefaults('one', ['review']);
   await store.saveDefaults('two', ['sql']);
 
@@ -43,8 +38,8 @@ test('stores Skills defaults per workspace without retaining runtime state', asy
     version: 1,
     activeProfileId: null,
     profiles: [
-      { id: 'one', workspaceRoot: 'C:/work/one', skillsRoot: 'C:/work/one/.codex/skills', enabledSkillIds: ['review'] },
-      { id: 'two', workspaceRoot: 'C:/work/two', skillsRoot: 'C:/work/two/.codex/skills', enabledSkillIds: ['sql'] },
+      { id: 'one', workspaceRoot: await fs.realpath(one.workspaceRoot), skillsRoot: await fs.realpath(one.skillsRoot), enabledSkillIds: ['review'] },
+      { id: 'two', workspaceRoot: await fs.realpath(two.workspaceRoot), skillsRoot: await fs.realpath(two.skillsRoot), enabledSkillIds: ['sql'] },
     ],
   });
 });
@@ -52,19 +47,13 @@ test('stores Skills defaults per workspace without retaining runtime state', asy
 test('persists an active profile atomically and rejects secret-shaped profile fields', async (t) => {
   const { root, store } = await makeProfileStore();
   t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = await makeWorkspace(root, 'one');
 
   await assert.rejects(
-    () => store.save({
-      id: 'one',
-      workspaceRoot: 'C:/work/one',
-      skillsRoot: 'C:/work/one/.codex/skills',
-      enabledSkillIds: [],
-      connectorToken: 'not-allowed',
-    }),
+    () => store.save({ id: 'one', ...workspace, enabledSkillIds: [], connectorToken: 'not-allowed' }),
     /unknown field/i,
   );
-
-  await store.save({ id: 'one', workspaceRoot: 'C:/work/one', skillsRoot: 'C:/work/one/.codex/skills', enabledSkillIds: [] });
+  await store.save({ id: 'one', ...workspace, enabledSkillIds: [] });
   await store.setActive('one');
 
   const reloaded = await createProfileStore(path.join(root, 'profiles.json'));
@@ -72,34 +61,65 @@ test('persists an active profile atomically and rejects secret-shaped profile fi
   assert.equal((await fs.readdir(root)).some((name) => name.includes('.tmp-')), false);
 });
 
-test('profile IPC accepts only an exact path-and-choices draft', async () => {
-  const handlers = new Map();
-  const sender = { getURL: () => rendererEntryUrl };
-  const saved = [];
-  registerIpcHandlers(
-    { handle: (channel, handler) => handlers.set(channel, handler) },
-    { saveProfile: async (profile) => { saved.push(profile); return profile; } },
-    () => sender,
+test('keeps enabled Skill defaults when an existing profile path is edited', async (t) => {
+  const { root, store } = await makeProfileStore();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const first = await makeWorkspace(root, 'one');
+  const replacement = await makeWorkspace(root, 'replacement');
+
+  await store.save({ id: 'one', ...first, enabledSkillIds: ['review'] });
+  await store.save({ id: 'one', ...replacement, enabledSkillIds: [] });
+
+  assert.deepEqual((await store.get('one')).enabledSkillIds, ['review']);
+  assert.equal((await store.get('one')).workspaceRoot, await fs.realpath(replacement.workspaceRoot));
+});
+
+test('recovers from corrupt state and removes a stale atomic-write temporary file', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-corrupt-profiles-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const primary = path.join(root, 'profiles.json');
+  await fs.writeFile(primary, '{corrupt json');
+  await fs.writeFile(path.join(root, '.profiles.json.tmp-interrupted'), '{"version":1}');
+
+  const store = await createProfileStore(primary);
+
+  assert.deepEqual(await store.list(), []);
+  const names = await fs.readdir(root);
+  assert.equal(names.some((name) => name.startsWith('profiles.json.corrupt-')), true);
+  assert.equal(names.some((name) => name.includes('.tmp-')), false);
+});
+
+test('profile service and IPC reject an out-of-workspace Skills root', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profile-policy-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = await makeWorkspace(root, 'workspace');
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-outside-skills-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' } });
+
+  await assert.rejects(
+    () => controller.saveProfile({ id: 'one', workspaceRoot: workspace.workspaceRoot, skillsRoot: outside, enabledSkillIds: [] }),
+    /Skills root/i,
   );
 
-  const draft = { id: 'one', workspaceRoot: 'C:/work/one', skillsRoot: 'C:/work/one/.codex/skills', enabledSkillIds: ['review'] };
-  await handlers.get('launcher:save-profile')({ sender }, draft);
-  assert.deepEqual(saved, [draft]);
-  assert.throws(
-    () => handlers.get('launcher:save-profile')({ sender }, { ...draft, connectorToken: 'secret' }),
-    /profile/i,
+  const handlers = new Map();
+  const sender = { getURL: () => rendererEntryUrl };
+  registerIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) }, controller, () => sender);
+  await assert.rejects(
+    () => handlers.get('launcher:save-profile')({ sender }, { id: 'one', workspaceRoot: workspace.workspaceRoot, skillsRoot: outside, enabledSkillIds: [] }),
+    /Skills root/i,
   );
 });
 
 test('active profile defaults are catalog-validated before private persistence', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profile-controller-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const skillsRoot = path.join(root, 'skills');
-  await fs.mkdir(path.join(skillsRoot, 'review'), { recursive: true });
-  await fs.writeFile(path.join(skillsRoot, 'review', 'SKILL.md'), '---\nname: Review\ndescription: Review safely.\n---\nBody');
+  const workspace = await makeWorkspace(root, 'workspace');
+  await fs.mkdir(path.join(workspace.skillsRoot, 'review'));
+  await fs.writeFile(path.join(workspace.skillsRoot, 'review', 'SKILL.md'), '---\nname: Review\ndescription: Review safely.\n---\nBody');
   const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' } });
 
-  await controller.saveProfile({ id: 'one', workspaceRoot: root, skillsRoot, enabledSkillIds: [] });
+  await controller.saveProfile({ id: 'one', ...workspace, enabledSkillIds: [] });
   await controller.setActiveProfile('one');
   await assert.rejects(() => controller.saveSkills(['outside']), /Unknown Skill/);
   await controller.saveSkills(['review']);

@@ -8,20 +8,20 @@ const test = require('node:test');
 
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('../electron/skills.cjs');
 
-async function makeSkillsRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
-  await fs.mkdir(path.join(root, 'review'));
-  await fs.writeFile(path.join(root, 'review', 'SKILL.md'), '---\nname: Review\ndescription: Review code safely.\n---\n' + 'x'.repeat(5000));
-  await fs.mkdir(path.join(root, 'invalid'));
-  await fs.writeFile(path.join(root, 'invalid', 'SKILL.md'), 'missing frontmatter');
-  return root;
+async function makeProfile() {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+  const skillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  await fs.mkdir(path.join(skillsRoot, 'review'), { recursive: true });
+  await fs.writeFile(path.join(skillsRoot, 'review', 'SKILL.md'), '---\nname: Review\ndescription: Review code safely.\n---\n' + 'x'.repeat(5000));
+  await fs.mkdir(path.join(skillsRoot, 'invalid'));
+  await fs.writeFile(path.join(skillsRoot, 'invalid', 'SKILL.md'), 'missing frontmatter');
+  return { id: 'one', workspaceRoot, skillsRoot, enabledSkillIds: [] };
 }
 
 test('scans direct Skills into bounded renderer-safe summaries and previews', async (t) => {
-  const root = await makeSkillsRoot();
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-
-  const skills = await scanSkills(root);
+  const profile = await makeProfile();
+  t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));
+  const skills = await scanSkills(profile);
 
   assert.deepEqual(skills.map(({ id, name, description }) => ({ id, name, description })), [
     { id: 'review', name: 'Review', description: 'Review code safely.' },
@@ -31,29 +31,39 @@ test('scans direct Skills into bounded renderer-safe summaries and previews', as
   assert.equal('path' in skills[0], false);
 });
 
-test('treats an absent optional Skills root as an empty catalog', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-missing-skills-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-
-  assert.deepEqual(await scanSkills(path.join(root, 'does-not-exist')), []);
-});
-
 test('rejects defaults outside the scanned catalog', async (t) => {
-  const root = await makeSkillsRoot();
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const profile = { id: 'one', workspaceRoot: 'C:/work/one', skillsRoot: root, enabledSkillIds: [] };
+  const profile = await makeProfile();
+  t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));
 
   await assert.rejects(() => saveSkillDefaults(profile, ['outside']), /Unknown Skill/);
   assert.deepEqual(await saveSkillDefaults(profile, ['review']), ['review']);
 });
 
 test('opens only a folder selected from the current Skills catalog', async (t) => {
-  const root = await makeSkillsRoot();
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const profile = await makeProfile();
+  t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));
   const opened = [];
 
-  await openSkillFolder(root, 'review', { openPath: async (value) => { opened.push(value); return ''; } });
-  await assert.rejects(() => openSkillFolder(root, 'outside', { openPath: async () => '' }), /Unknown Skill/);
+  await openSkillFolder(profile, 'review', { openPath: async (value) => { opened.push(value); return ''; } });
+  await assert.rejects(() => openSkillFolder(profile, 'outside', { openPath: async () => '' }), /Unknown Skill/);
+  assert.deepEqual(opened, [path.join(await fs.realpath(profile.skillsRoot), 'review')]);
+});
 
-  assert.deepEqual(opened, [path.join(root, 'review')]);
+test('rejects a Skill directory replaced with a link after catalog scanning', async (t) => {
+  const profile = await makeProfile();
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-outside-skill-'));
+  t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const opened = [];
+
+  await assert.rejects(
+    () => openSkillFolder(profile, 'review', { openPath: async (value) => { opened.push(value); return ''; } }, {
+      beforeOpen: async () => {
+        await fs.rm(path.join(profile.skillsRoot, 'review'), { recursive: true });
+        await fs.symlink(outside, path.join(profile.skillsRoot, 'review'), 'junction');
+      },
+    }),
+    /Skill folder changed/i,
+  );
+  assert.deepEqual(opened, []);
 });

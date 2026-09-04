@@ -13,14 +13,46 @@ function createJsonStateStore(filePath) {
     throw new TypeError('State path must be a non-empty string');
   }
 
-  async function read(fallback) {
+  async function read(fallback, validate = () => undefined) {
+    await removeStaleTemporaryFiles();
+    let source;
     try {
-      return JSON.parse(await fs.readFile(filePath, 'utf8'));
+      source = await fs.readFile(filePath, 'utf8');
     } catch (error) {
       if (error && error.code === 'ENOENT') {
         return fallback;
       }
       throw error;
+    }
+    try {
+      const value = JSON.parse(source);
+      validate(value);
+      return value;
+    } catch {
+      await quarantineCorruptState();
+      return fallback;
+    }
+  }
+
+  async function removeStaleTemporaryFiles() {
+    const directory = path.dirname(filePath);
+    const prefix = `.${path.basename(filePath)}.tmp-`;
+    try {
+      const entries = await fs.readdir(directory);
+      await Promise.all(entries
+        .filter((entry) => entry.startsWith(prefix))
+        .map((entry) => fs.rm(path.join(directory, entry), { force: true })));
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  async function quarantineCorruptState() {
+    const backupPath = `${filePath}.corrupt-${randomUUID()}`;
+    try {
+      await fs.rename(filePath, backupPath);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
     }
   }
 

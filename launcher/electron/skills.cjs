@@ -2,6 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { resolveProfileRoots } = require('./profiles.cjs');
 
 const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_SKILLS = 128;
@@ -10,14 +11,8 @@ const MAX_DESCRIPTION_LENGTH = 1024;
 const MAX_PREVIEW_BYTES = 4096;
 
 /** Return renderer-safe metadata, never source paths or full Skill content. */
-async function scanSkills(skillsRoot) {
-  let canonicalRoot;
-  try {
-    canonicalRoot = await fs.realpath(skillsRoot);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return [];
-    throw error;
-  }
+async function scanSkills(profile) {
+  const { skillsRoot: canonicalRoot } = await resolveProfileRoots(profile);
   const entries = await fs.readdir(canonicalRoot, { withFileTypes: true });
   const skills = [];
 
@@ -47,7 +42,7 @@ async function scanSkills(skillsRoot) {
 
 async function saveSkillDefaults(profile, skillIds) {
   validateSkillIds(skillIds);
-  const catalog = await scanSkills(profile.skillsRoot);
+  const catalog = await scanSkills(profile);
   const known = new Set(catalog.map((skill) => skill.id));
   for (const id of skillIds) {
     if (!known.has(id)) {
@@ -57,17 +52,37 @@ async function saveSkillDefaults(profile, skillIds) {
   return [...skillIds];
 }
 
-async function openSkillFolder(skillsRoot, skillId, shell) {
+async function openSkillFolder(profile, skillId, shell, options = {}) {
   validateSkillIds([skillId]);
-  const catalog = await scanSkills(skillsRoot);
+  const catalog = await scanSkills(profile);
   if (!catalog.some((skill) => skill.id === skillId)) {
     throw new Error(`Unknown Skill: ${skillId}`);
   }
   if (!shell || typeof shell.openPath !== 'function') {
     throw new TypeError('Shell does not support opening a local folder');
   }
-  const root = await fs.realpath(skillsRoot);
-  return shell.openPath(path.join(root, skillId));
+  // Resolve and verify again immediately before crossing the shell boundary.
+  // This rejects a directory swapped after catalog scanning.
+  const { skillsRoot } = await resolveProfileRoots(profile);
+  if (typeof options.beforeOpen === 'function') await options.beforeOpen();
+  const expectedPath = path.join(skillsRoot, skillId);
+  const info = await fs.lstat(expectedPath).catch(() => undefined);
+  if (!info || !info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('Skill folder changed before it could be opened');
+  }
+  const finalPath = await fs.realpath(expectedPath).catch(() => undefined);
+  if (!finalPath || !samePath(finalPath, expectedPath)) {
+    throw new Error('Skill folder changed before it could be opened');
+  }
+  return shell.openPath(finalPath);
+}
+
+function samePath(left, right) {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
 }
 
 function validateSkillIds(skillIds) {
