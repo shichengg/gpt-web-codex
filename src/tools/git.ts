@@ -31,14 +31,21 @@ async function runGit(root: string, paths: PathPolicy, args: string[]): Promise<
   const cwd = await paths.resolve('.');
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, { cwd, shell: false });
-    let output = '';
+    const output: Buffer[] = [];
+    let outputBytes = 0;
     let stderr = '';
     let truncated = false;
     child.stdout.on('data', (chunk: Buffer | string) => {
-      const text = chunk.toString();
-      const remaining = MAX_GIT_BYTES - output.length;
-      if (remaining > 0) output += text.slice(0, remaining);
-      if (text.length > Math.max(remaining, 0)) truncated = true;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = MAX_GIT_BYTES - outputBytes;
+      if (remaining > 0) {
+        output.push(bytes.subarray(0, remaining));
+        outputBytes += Math.min(bytes.byteLength, remaining);
+      }
+      if (bytes.byteLength > remaining && !truncated) {
+        truncated = true;
+        child.kill();
+      }
     });
     child.stderr.on('data', (chunk: Buffer | string) => {
       const remaining = 4096 - stderr.length;
@@ -46,8 +53,13 @@ async function runGit(root: string, paths: PathPolicy, args: string[]): Promise<
     });
     child.once('error', reject);
     child.once('close', (code) => {
+      const text = Buffer.concat(output).toString('utf8');
       if (code === 0) {
-        resolve(truncated ? { code: 'output_truncated', output, truncated: true } : output);
+        resolve(truncated ? { code: 'output_truncated', output: text, truncated: true } : text);
+        return;
+      }
+      if (truncated) {
+        resolve({ code: 'output_truncated', output: text, truncated: true });
         return;
       }
       if (code === 128 || stderr.toLowerCase().includes('not a git repository')) {

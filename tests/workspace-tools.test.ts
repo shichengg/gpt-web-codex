@@ -45,4 +45,13 @@ describe('workspace tools', () => {
     await expect(tools.readFile('binary.bin')).rejects.toThrow('binary');
     await expect(tools.listDirectory('.')).resolves.toHaveLength(200);
   });
+
+  test('reports search traversal truncation when a directory exceeds its entry cap', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    await Promise.all(Array.from({ length: 250 }, (_, index) => writeFile(path.join(root, `entry-${index}.txt`), 'x')));
+    const tools = createWorkspaceTools(root, await createPathPolicy(root));
+
+    await expect(tools.search('needle')).resolves.toMatchObject({ matches: [], truncated: true });
+  });
 });
