@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { open, opendir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { PathPolicy } from '../security/paths.js';
 
@@ -32,6 +32,11 @@ export interface SearchResult {
   truncated: boolean;
 }
 
+export interface BoundedText {
+  text: string;
+  truncated: boolean;
+}
+
 export interface WorkspaceTools {
   info(): Promise<WorkspaceInfo>;
   listDirectory(relativePath: string): Promise<DirectoryEntry[]>;
@@ -48,16 +53,17 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
       const rootPath = await resolve('.');
       const details = await stat(rootPath);
       const entries = details.isDirectory()
-        ? Math.min((await readdir(rootPath)).length, WORKSPACE_LIMITS.maxEntries)
+        ? await countEntries(rootPath)
         : 0;
       return { root: rootPath, exists: true, isDirectory: details.isDirectory(), entries };
     },
 
     async listDirectory(relativePath) {
       const directoryPath = await resolve(relativePath);
-      const entries = await readdir(directoryPath, { withFileTypes: true });
       const result: DirectoryEntry[] = [];
-      for (const entry of entries.slice(0, WORKSPACE_LIMITS.maxEntries)) {
+      const directory = await opendir(directoryPath);
+      for await (const entry of directory) {
+          if (result.length >= WORKSPACE_LIMITS.maxEntries) break;
         const childRelative = path.join(relativePath, entry.name);
         try {
           const childPath = await resolve(childRelative);
@@ -68,15 +74,14 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
           });
         } catch {
           // Entries rejected by the path policy are not disclosed.
-        }
+          }
       }
       return result;
     },
 
     async readFile(relativePath) {
       const filePath = await resolve(relativePath);
-      const contents = await readFile(filePath);
-      return contents.subarray(0, WORKSPACE_LIMITS.maxBytes).toString('utf8');
+      return (await readText(filePath)).text;
     },
 
     async search(needle) {
@@ -92,8 +97,8 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
           return;
         }
         const directoryPath = await resolve(relativeDirectory);
-        const entries = await readdir(directoryPath, { withFileTypes: true });
-        for (const entry of entries.slice(0, WORKSPACE_LIMITS.maxEntries)) {
+        const directory = await opendir(directoryPath);
+        for await (const entry of directory) {
           if (matches.length >= WORKSPACE_LIMITS.maxMatches) {
             truncated = true;
             return;
@@ -112,7 +117,7 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
           if (!entry.isFile()) continue;
           try {
             const filePath = await resolve(relativeEntry);
-            const source = (await readFile(filePath)).subarray(0, WORKSPACE_LIMITS.maxBytes).toString('utf8');
+            const source = (await readText(filePath)).text;
             const lines = source.split(/\r?\n/);
             for (let index = 0; index < lines.length; index += 1) {
               const column = lines[index].indexOf(needle);
@@ -133,4 +138,28 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
       return { matches, truncated };
     },
   };
+}
+
+async function countEntries(directoryPath: string): Promise<number> {
+  const directory = await opendir(directoryPath);
+  let count = 0;
+  for await (const _entry of directory) {
+      count += 1;
+      if (count >= WORKSPACE_LIMITS.maxEntries) return count;
+  }
+  return count;
+}
+
+async function readText(filePath: string): Promise<BoundedText> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(WORKSPACE_LIMITS.maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const contents = buffer.subarray(0, bytesRead);
+    if (contents.includes(0)) throw new Error('binary files are not searchable or readable');
+    const details = await handle.stat();
+    return { text: contents.toString('utf8'), truncated: details.size > bytesRead };
+  } finally {
+    await handle.close();
+  }
 }

@@ -34,4 +34,15 @@ describe('workspace tools', () => {
     await expect(tools.readFile('large.txt')).resolves.toHaveLength(64 * 1024);
     await expect(tools.listDirectory('.')).resolves.toEqual(expect.arrayContaining([{ name: 'large.txt', type: 'file' }]));
   });
+
+  test('rejects binary files and caps directory enumeration', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    await writeFile(path.join(root, 'binary.bin'), Buffer.from([120, 0, 121]));
+    await Promise.all(Array.from({ length: 250 }, (_, index) => writeFile(path.join(root, `entry-${index}.txt`), 'x')));
+    const tools = createWorkspaceTools(root, await createPathPolicy(root));
+
+    await expect(tools.readFile('binary.bin')).rejects.toThrow('binary');
+    await expect(tools.listDirectory('.')).resolves.toHaveLength(200);
+  });
 });

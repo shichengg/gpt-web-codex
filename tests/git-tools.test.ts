@@ -40,4 +40,21 @@ describe('git tools', () => {
     await expect(git.status()).resolves.toEqual({ code: 'not_git_repository' });
     await expect(git.diff()).resolves.toEqual({ code: 'not_git_repository' });
   });
+
+  test('returns an explicit bounded result for oversized diff output', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-git-large-'));
+    roots.push(root);
+    await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: root });
+    await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: root });
+    const file = path.join(root, 'large.txt');
+    await writeFile(file, 'a'.repeat(200_000));
+    await execFileAsync('git', ['add', 'large.txt'], { cwd: root });
+    await execFileAsync('git', ['commit', '--quiet', '-m', 'initial'], { cwd: root });
+    await writeFile(file, 'b'.repeat(200_000));
+    const result = await createGitTools(root, await createPathPolicy(root)).diff();
+
+    expect(result).toMatchObject({ code: 'output_truncated', truncated: true });
+    expect((result as { output: string }).output.length).toBeLessThanOrEqual(128 * 1024);
+  });
 });
