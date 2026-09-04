@@ -19,6 +19,8 @@ const IPC_CHANNELS = Object.freeze({
   openLogs: 'launcher:open-logs',
   openChatGpt: 'launcher:open-chatgpt',
   clearChatGptSession: 'launcher:clear-chatgpt-session',
+  preferences: 'launcher:preferences',
+  savePreferences: 'launcher:save-preferences',
   snapshotChanged: 'launcher:snapshot-changed',
   log: 'launcher:log',
 });
@@ -53,6 +55,8 @@ function createPreloadApi(ipcRenderer) {
     openLogs: () => ipcRenderer.invoke(IPC_CHANNELS.openLogs),
     openChatGpt: () => ipcRenderer.invoke(IPC_CHANNELS.openChatGpt),
     clearChatGptSession: () => ipcRenderer.invoke(IPC_CHANNELS.clearChatGptSession),
+    preferences: () => ipcRenderer.invoke(IPC_CHANNELS.preferences),
+    savePreferences: (preferences) => ipcRenderer.invoke(IPC_CHANNELS.savePreferences, preferences),
     onSnapshot: (listener) => subscribe(ipcRenderer, IPC_CHANNELS.snapshotChanged, listener),
     onLog: (listener) => subscribe(ipcRenderer, IPC_CHANNELS.log, listener),
   });

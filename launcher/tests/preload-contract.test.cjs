@@ -36,8 +36,28 @@ test('preload exposes only declared launcher methods', () => {
     'openLogs',
     'openChatGpt',
     'clearChatGptSession',
+    'preferences',
+    'savePreferences',
     'onSnapshot',
     'onLog',
+  ]);
+});
+
+test('preload forwards preferences only through dedicated IPC channels', async () => {
+  const calls = [];
+  const api = createPreloadApi({
+    invoke: (...args) => { calls.push(args); return Promise.resolve(args[1]); },
+    on() {},
+    removeListener() {},
+  });
+  const preferences = { language: 'zh-CN', theme: 'system', guideDismissedSteps: [] };
+
+  await api.preferences();
+  await api.savePreferences(preferences);
+
+  assert.deepEqual(calls, [
+    ['launcher:preferences'],
+    ['launcher:save-preferences', preferences],
   ]);
 });
 
@@ -119,7 +139,7 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
     'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
     'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
     'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs', 'openChatGpt',
-    'clearChatGptSession', 'onSnapshot', 'onLog',
+    'clearChatGptSession', 'preferences', 'savePreferences', 'onSnapshot', 'onLog',
   ]);
 });
 

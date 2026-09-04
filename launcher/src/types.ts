@@ -7,9 +7,13 @@ export interface LauncherSnapshot {
   paired?: boolean;
   connectorName?: string;
   tunnelMessage?: string;
+  preferences?: LauncherUiPreferences;
+  guide?: GuideStep[];
 }
 
 export type UiTheme = 'system' | 'light' | 'dark';
+export interface LauncherUiPreferences { language: 'zh-CN' | 'en'; theme: UiTheme; guideDismissedSteps: number[]; }
+export interface GuideStep { id: number; status: 'complete' | 'needs-action' | 'unavailable'; messageKey: string; }
 
 export interface DiagnosticReport {
   checks: Array<{ id: string; status: 'ok' | 'warning' | 'error'; message?: string }>;
@@ -78,6 +82,8 @@ export interface GptWebCodexApi {
   openLogs(): Promise<void>;
   openChatGpt(): Promise<void>;
   clearChatGptSession(): Promise<void>;
+  preferences(): Promise<LauncherUiPreferences>;
+  savePreferences(preferences: LauncherUiPreferences): Promise<LauncherUiPreferences>;
   onSnapshot(listener: (snapshot: LauncherSnapshot) => void): () => void;
   onLog(listener: (entry: string) => void): () => void;
 }

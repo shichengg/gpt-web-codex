@@ -13,6 +13,7 @@ const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs
 const { createTunnelSupervisor, redactTunnelLog } = require('./tunnel-supervisor.cjs');
 const { doctor: runDoctor, openDiagnosticLogs } = require('./doctor.cjs');
 const { createChatGptWindowController } = require('./chatgpt-window.cjs');
+const { createLauncherState, validatePreferences } = require('./launcher-state.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
 const rendererEntry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -83,6 +84,7 @@ async function createProfileController({
   diagnosticLogDirectory,
 }) {
   const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
+  const launcherState = createLauncherState(path.join(userDataPath, 'launcher-state.json'));
   const base = createDefaultController();
   const registries = new Map();
   const client = runtimeClient ?? (typeof runtimeSupervisor?.call === 'function' ? new RuntimeClient(runtimeSupervisor) : undefined);
@@ -136,14 +138,34 @@ async function createProfileController({
   }
 
   async function runtimeSnapshot() {
-    if (!client) return base.snapshot();
-    const snapshot = await client.snapshot();
-    return {
+    const snapshot = client ? await client.snapshot() : await base.snapshot();
+    const runtime = {
       state: snapshot.state,
       workspace: snapshot.workspace ?? null,
       ...(snapshot.message ? { message: snapshot.message } : {}),
       ...tunnelSnapshot(),
     };
+    const [savedProfiles, preferences, doctor] = await Promise.all([
+      profiles.list(),
+      launcherState.preferences.read(),
+      createDoctorReport(),
+    ]);
+    return {
+      ...runtime,
+      preferences,
+      guide: guideStateFrom({ snapshot: runtime, profiles: savedProfiles, doctor }),
+    };
+  }
+
+  async function createDoctorReport() {
+    return runDoctor({
+      runtimeStatus: () => runtimeSupervisor?.status?.(),
+      getActiveProfile: () => profiles.getActive(),
+      tunnelStatus: () => tunnelSupervisor?.status?.(),
+      connectorSnapshot: () => connectorIdentity?.snapshot?.(),
+      tunnelAvailable,
+      coreAssetsAvailable: await resolveCoreAssetsAvailable(coreAssetsAvailable),
+    });
   }
 
   function tunnelSnapshot() {
@@ -331,6 +353,8 @@ async function createProfileController({
       tunnelAvailable,
       coreAssetsAvailable: await resolveCoreAssetsAvailable(coreAssetsAvailable),
     }),
+    preferences: () => launcherState.preferences.read(),
+    savePreferences: (preferences) => launcherState.preferences.write(validatePreferences(preferences)),
     openLogs: () => openDiagnosticLogs(diagnosticLogDirectory ?? path.join(userDataPath, 'logs'), shell),
   });
 }
@@ -388,7 +412,31 @@ function sanitizeLauncherSnapshot(snapshot, maximumBytes) {
   if (typeof source.paired === 'boolean') safe.paired = source.paired;
   if (typeof source.connectorName === 'string') safe.connectorName = redactTunnelLog(source.connectorName, maximumBytes);
   if (typeof source.tunnelMessage === 'string') safe.tunnelMessage = redactTunnelLog(source.tunnelMessage, maximumBytes);
+  if (source.preferences) {
+    try { safe.preferences = validatePreferences(source.preferences); } catch { /* omit invalid state */ }
+  }
+  if (Array.isArray(source.guide)) {
+    safe.guide = source.guide.filter((step) => step && Number.isInteger(step.id) &&
+      [1, 2, 3, 4, 5].includes(step.id) && ['complete', 'needs-action', 'unavailable'].includes(step.status) &&
+      typeof step.messageKey === 'string').map((step) => Object.freeze({
+      id: step.id, status: step.status, messageKey: step.messageKey,
+    }));
+  }
   return Object.freeze(safe);
+}
+
+function guideStateFrom({ snapshot = {}, profiles = [], doctor = {} } = {}) {
+  const hasProfile = Array.isArray(profiles) && profiles.length > 0;
+  const tunnelCheck = Array.isArray(doctor.checks) ? doctor.checks.find((check) => check?.id === 'tunnel') : undefined;
+  const tunnelUnavailable = tunnelCheck?.message?.toLowerCase().includes('unavailable') || tunnelCheck?.status === 'error';
+  const paired = snapshot.paired === true;
+  return [
+    { id: 1, status: hasProfile ? 'complete' : 'needs-action', messageKey: hasProfile ? 'guide.profile.ready' : 'guide.profile.required' },
+    { id: 2, status: 'complete', messageKey: 'guide.skills.ready' },
+    { id: 3, status: tunnelUnavailable ? 'unavailable' : (paired ? 'complete' : 'needs-action'), messageKey: tunnelUnavailable ? 'guide.tunnel.unavailable' : (paired ? 'guide.tunnel.paired' : 'guide.tunnel.required') },
+    { id: 4, status: paired ? 'complete' : 'needs-action', messageKey: paired ? 'guide.connector.ready' : 'guide.connector.required' },
+    { id: 5, status: snapshot.state === 'running' && paired ? 'complete' : 'needs-action', messageKey: snapshot.state === 'running' && paired ? 'guide.runtime.ready' : 'guide.runtime.required' },
+  ].map((step) => Object.freeze(step));
 }
 
 function rejectUntrustedSender(event, getTrustedWebContents) {
@@ -489,6 +537,11 @@ function registerIpcHandlers(ipcMain, controller = createDefaultController(), ge
     'launcher:open-logs': guarded((args) => { requireNoPayload(args, 'openLogs'); return controller.openLogs(); }),
     'launcher:open-chatgpt': guarded((args) => { requireNoPayload(args, 'openChatGpt'); return controller.openChatGpt(); }),
     'launcher:clear-chatgpt-session': guarded((args) => { requireNoPayload(args, 'clearChatGptSession'); return controller.clearChatGptSession(); }),
+    'launcher:preferences': guarded((args) => { requireNoPayload(args, 'preferences'); return controller.preferences(); }),
+    'launcher:save-preferences': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('savePreferences requires one payload');
+      return controller.savePreferences(validatePreferences(args[0]));
+    }),
   };
 
   for (const [channel, handler] of Object.entries(handlers)) {
@@ -735,6 +788,8 @@ module.exports = {
   validateSkillIds,
   validateWorkspaceProfileDraft,
   validateTaskId,
+  guideStateFrom,
+  validatePreferences,
   stopRuntimeBeforeQuit,
   windowOptions,
 };
