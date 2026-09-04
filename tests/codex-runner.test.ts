@@ -25,7 +25,62 @@ function fakeChild() {
   return child;
 }
 
+function blockingChild() {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    kill: (signal?: NodeJS.Signals) => boolean;
+  };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => true;
+  return child;
+}
+
 describe('CodexRunner', () => {
+  test('returns a running task before its child exits and persists completion in the background', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const child = blockingChild();
+    const store = new TaskStore(stateDir);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store,
+      spawn: () => child,
+    });
+
+    const task = await runner.submit({ prompt: 'run', skillIds: [] });
+
+    await expect(store.get(task.id)).resolves.toMatchObject({ state: 'running' });
+    child.stdout.emit('data', 'finished');
+    child.emit('close', 0, null);
+    await expect(pollTask(store, task.id, 'succeeded')).resolves.toMatchObject({ output: 'finished' });
+  });
+
+  test('cancellation waits for the owned child to exit before marking its task cancelled', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const child = blockingChild();
+    const store = new TaskStore(stateDir);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store,
+      spawn: () => child,
+      cancelGraceMs: 10,
+    });
+    const task = await runner.submit({ prompt: 'run', skillIds: [] });
+    const cancelling = runner.cancel(task.id);
+
+    await expect(store.get(task.id)).resolves.toMatchObject({ state: 'running' });
+    child.emit('close', null, 'SIGTERM');
+    await expect(cancelling).resolves.toMatchObject({ state: 'cancelled' });
+  });
   test('spawns the fixed executable with the configured cwd and without a shell', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
@@ -130,7 +185,7 @@ describe('CodexRunner', () => {
       spawn: () => { throw new Error('codex unavailable'); },
     });
 
-    await expect(runner.submit({ prompt: 'run', skillIds: [] })).rejects.toThrow('codex unavailable');
+    await expect(runner.submit({ prompt: 'run', skillIds: [] })).resolves.toMatchObject({ state: 'failed', error: 'codex unavailable' });
     const files = await import('node:fs/promises').then(({ readdir }) => readdir(stateDir));
     expect(files).toHaveLength(1);
     const task = await store.get(files[0].replace('.json', ''));
@@ -187,3 +242,12 @@ describe('CodexRunner', () => {
     await expect(runner.submit({ prompt: 'ok', skillIds: ['abcdefgh', 'abcdefgh'] })).rejects.toThrow('metadata exceeds');
   });
 });
+
+async function pollTask(store: TaskStore, id: string, state: string): Promise<Awaited<ReturnType<TaskStore['get']>>> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const task = await store.get(id);
+    if (task.state === state) return task;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`task ${id} did not reach ${state}`);
+}

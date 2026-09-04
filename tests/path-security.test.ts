@@ -53,4 +53,13 @@ describe('createPathPolicy', () => {
       await expect(policy.resolve(relativePath)).rejects.toThrow('sensitive');
     }
   });
+
+  test('denies a canonical excluded root even when it is below the workspace root', async () => {
+    const root = await makeWorkspace();
+    const stateRoot = path.join(root, '.codex', 'state');
+    await mkdir(stateRoot, { recursive: true });
+    const policy = await createPathPolicy(root, { deniedRoots: [stateRoot] });
+
+    await expect(policy.resolve('.codex/state/task.json')).rejects.toThrow('denied');
+  });
 });

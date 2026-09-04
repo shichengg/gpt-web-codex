@@ -60,6 +60,7 @@ const tools = {
   list_mcp_tools: z.object({ serverId: z.string().trim().min(1) }).strict(),
   call_mcp_tool: z.object({ serverId: z.string().trim().min(1), tool: z.string().trim().min(1), input: z.record(z.unknown()).default({}) }).strict(),
   codex_submit: z.object({ prompt: z.string().trim().min(1), skillIds: z.array(z.string().trim().min(1)).default([]) }).strict(),
+  codex_cancel: z.object({ taskId: z.string().uuid() }).strict(),
   codex_status: z.object({ taskId: z.string().uuid() }).strict(),
   codex_output: z.object({ taskId: z.string().uuid() }).strict(),
 } as const;
@@ -116,6 +117,7 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
       closed = true;
       for (const request of runtime.requests) request.destroy();
       for (const controller of runtime.controllers) controller.abort();
+      await dependencies.codex.close?.();
       await Promise.allSettled([...runtime.operations]);
       await Promise.all([...runtime.sessions].map(async ({ server, transport }) => {
         await Promise.allSettled([server.close(), transport.close()]);
@@ -140,8 +142,16 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
     return;
   }
   runtime.requests.add(request);
+  const requestController = new AbortController();
+  runtime.controllers.add(requestController);
+  const abortOnDisconnect = () => {
+    if (!response.writableEnded) requestController.abort();
+  };
+  request.once('aborted', abortOnDisconnect);
+  request.once('close', () => { if (request.aborted || !request.complete) abortOnDisconnect(); });
+  response.once('close', abortOnDisconnect);
   const body = await readJson(request);
-  const server = createMcpServer(dependencies, runtime);
+  const server = createMcpServer(dependencies, runtime, requestController.signal);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const session = { server, transport };
   runtime.sessions.add(session);
@@ -151,11 +161,12 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
   } finally {
     runtime.sessions.delete(session);
     runtime.requests.delete(request);
+    runtime.controllers.delete(requestController);
     await Promise.allSettled([server.close(), transport.close()]);
   }
 }
 
-function createMcpServer(dependencies: ConnectorDependencies, runtime: McpRuntime): McpServer {
+function createMcpServer(dependencies: ConnectorDependencies, runtime: McpRuntime, requestSignal?: AbortSignal): McpServer {
   const server = new McpServer({ name: 'gpt-web-codex', version: '0.1.0' });
   for (const name of Object.keys(tools)) {
     server.registerTool(name, { description: `GPT Web Codex ${name}`, inputSchema: tools[name as keyof typeof tools] }, (async (input: unknown) => {
@@ -168,7 +179,7 @@ function createMcpServer(dependencies: ConnectorDependencies, runtime: McpRuntim
       runtime.controllers.add(controller);
       const operation = (async () => {
        try {
-        const result = await route(name, parsed.data, dependencies, controller.signal);
+        const result = await route(name, parsed.data, dependencies, anySignal(controller.signal, requestSignal));
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (cause) {
         const error = classifyError(cause);
@@ -206,7 +217,7 @@ async function route(tool: string, input: unknown, dependencies: ConnectorDepend
   switch (tool) {
     case 'workspace_info': return { ...(await dependencies.workspace.info()) };
     case 'list_directory': return { entries: await dependencies.workspace.listDirectory((input as { relativePath: string }).relativePath) };
-    case 'read_file': return { content: await dependencies.workspace.readFile((input as { relativePath: string }).relativePath) };
+    case 'read_file': return { ...(await dependencies.workspace.readFile((input as { relativePath: string }).relativePath)) };
     case 'search_workspace': return { ...(await dependencies.workspace.search((input as { needle: string }).needle)) };
     case 'git_status': return { result: await dependencies.git.status() };
     case 'git_diff': return { result: await dependencies.git.diff() };
@@ -226,16 +237,30 @@ async function route(tool: string, input: unknown, dependencies: ConnectorDepend
       const task = await dependencies.codex.submit(input as { prompt: string; skillIds: string[] }, signal);
       return { id: task.id, state: task.state, createdAt: task.createdAt, updatedAt: task.updatedAt };
     }
+    case 'codex_cancel': {
+      const task = await dependencies.codex.cancel((input as { taskId: string }).taskId);
+      return { id: task.id, state: task.state, error: task.error, createdAt: task.createdAt, updatedAt: task.updatedAt };
+    }
     case 'codex_status': {
       const task = await dependencies.tasks.get((input as { taskId: string }).taskId);
       return { id: task.id, state: task.state, error: task.error, createdAt: task.createdAt, updatedAt: task.updatedAt };
     }
     case 'codex_output': {
       const task = await dependencies.tasks.get((input as { taskId: string }).taskId);
-      return { id: task.id, state: task.state, output: task.output, error: task.error };
+      return { id: task.id, state: task.state, output: task.output, outputTruncated: task.outputTruncated, error: task.error };
     }
     default: throw new Error(`Unknown tool: ${tool}`);
   }
+}
+
+function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal {
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (!signal) continue;
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return controller.signal;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

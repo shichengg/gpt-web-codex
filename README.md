@@ -116,12 +116,16 @@ queued -> running -> succeeded
                  \-> cancelled
 ```
 
-Task state is persisted as JSON in `CODEX_STATE_DIR`. The state directory is
-local operational data; do not commit it or place credentials in it.
+Task state is persisted as JSON in `CODEX_STATE_DIR`. It is automatically
+excluded from all workspace read, list, and search tools, including when the
+state directory is beneath the workspace. The state directory is local
+operational data; do not commit it or place credentials in it.
 
 ## Safety limits
 
 - Workspace reads: 64 KiB per file, 200 directory entries, 100 search matches.
+- Workspace search: 200 entries, 200 files, 512 KiB, and one second in total;
+  responses include scan metadata and say when a limit truncated results.
 - Git output: 128 KiB and truncated when necessary.
 - HTTP request body: 1 MiB.
 - Codex prompt: 256 KiB; selected Skills context: 64 KiB; at most 64 Skills.
@@ -138,8 +142,9 @@ commands.
 Run the connector with a same-host compatible MCP client. Start by calling
 `workspace_info`, then `list_skills` and `list_mcp_servers` to verify the
 binding. Submit only the task and Skills needed for the current workspace. A
-successful `codex_submit` returns a task ID; poll `codex_status` and fetch the
-bounded result with `codex_output`. A ChatGPT deployment requires the
+successful `codex_submit` returns a running task ID immediately; poll
+`codex_status`, use `codex_cancel` when needed, and fetch the bounded result
+with `codex_output`. A ChatGPT deployment requires the
 explicit HTTPS/tunnel and connector authentication layer described above;
 ChatGPT registration is outside this MVP.
 

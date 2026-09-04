@@ -13,7 +13,7 @@ if (process.argv.includes('--help')) {
   console.log('GPT Web Codex connector: configure CODEX_WORKSPACE_ROOT and CODEX_CONNECTOR_TOKEN, then start the bridge.');
 } else {
   const config = loadConfig(process.env);
-  const paths = await createPathPolicy(config.workspaceRoot);
+  const paths = await createPathPolicy(config.workspaceRoot, { deniedRoots: [config.stateDir] });
   const skills = await SkillCatalog.create(config.skillsRoot);
   const tasks = new TaskStore(config.stateDir);
   const bridge = await createServer({

@@ -20,7 +20,7 @@ describe('workspace tools', () => {
     await writeFile(path.join(root, '.env'), 'TOKEN=secret');
     const tools = createWorkspaceTools(root, await createPathPolicy(root));
 
-    await expect(tools.readFile('src/a.ts')).resolves.toContain('export');
+    await expect(tools.readFile('src/a.ts')).resolves.toMatchObject({ text: expect.stringContaining('export'), truncated: false });
     await expect(tools.readFile('.env')).rejects.toThrow('sensitive');
     await expect(tools.search('needle')).resolves.toMatchObject({ matches: expect.any(Array) });
   });
@@ -31,7 +31,7 @@ describe('workspace tools', () => {
     await writeFile(path.join(root, 'large.txt'), 'x'.repeat(70_000));
     const tools = createWorkspaceTools(root, await createPathPolicy(root));
 
-    await expect(tools.readFile('large.txt')).resolves.toHaveLength(64 * 1024);
+    await expect(tools.readFile('large.txt')).resolves.toMatchObject({ text: expect.any(String), truncated: true });
     await expect(tools.listDirectory('.')).resolves.toEqual(expect.arrayContaining([{ name: 'large.txt', type: 'file' }]));
   });
 
@@ -63,5 +63,31 @@ describe('workspace tools', () => {
     const tools = createWorkspaceTools(root, await createPathPolicy(root));
 
     await expect(tools.listDirectory('.')).resolves.not.toContainEqual({ name: 'zzz-allowed.txt', type: 'file' });
+  });
+
+  test('does not expose task state files when the state root is inside the workspace', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    const state = path.join(root, '.codex', 'state');
+    await mkdir(state, { recursive: true });
+    await writeFile(path.join(state, 'task.json'), 'needle secret');
+    const { createPathPolicy } = await import('../src/security/paths.js');
+    const tools = createWorkspaceTools(root, await createPathPolicy(root, { deniedRoots: [state] }));
+
+    await expect(tools.readFile('.codex/state/task.json')).rejects.toThrow('denied');
+    await expect(tools.listDirectory('.codex/state')).rejects.toThrow('denied');
+    await expect(tools.search('needle')).resolves.toMatchObject({ matches: [] });
+  });
+
+  test('applies global search scan budgets and reports their metadata', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    await Promise.all(Array.from({ length: 4 }, (_, index) => writeFile(path.join(root, `f-${index}.txt`), 'needle')));
+    const tools = createWorkspaceTools(root, await createPathPolicy(root), { maxSearchFiles: 2, maxSearchEntries: 10, maxSearchBytes: 100, maxSearchMs: 5_000 });
+
+    await expect(tools.search('needle')).resolves.toMatchObject({
+      truncated: true,
+      scan: { files: 2, entries: 2, bytes: 12 },
+    });
   });
 });

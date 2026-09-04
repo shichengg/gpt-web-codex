@@ -17,7 +17,7 @@ describe('TaskStore', () => {
     const store = new TaskStore(root, { maxOutputBytes: 32 });
 
     const task = await store.create({ prompt: 'test', skillIds: [] });
-    await store.appendOutput(task.id, 'token=abc123 api_key=secret password=hunter2');
+    await store.appendOutput(task.id, 'token=abc123 api_key=secret password=hunter2 {"token":"json-secret","authorization":"Bearer json-header"} Authorization: Bearer header-secret');
 
     await expect(store.get(task.id)).resolves.toMatchObject({
       id: task.id,
@@ -25,6 +25,8 @@ describe('TaskStore', () => {
       output: expect.not.stringContaining('abc123'),
     });
     await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('secret');
+    await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('header-secret');
+    await expect(readFile(path.join(root, `${task.id}.json`), 'utf8')).resolves.not.toContain('json-header');
   });
 
   test('supports explicit lifecycle completion and rejects unknown tasks', async () => {
@@ -52,6 +54,7 @@ describe('TaskStore', () => {
     expect(output).toBe('你好…');
     expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(10);
     expect(output).not.toContain('�');
+    await expect(store.get(task.id)).resolves.toMatchObject({ outputTruncated: true });
   });
 
   test('validates prompt, Skill IDs, and aggregate persisted metadata independently', async () => {

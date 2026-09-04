@@ -7,7 +7,6 @@ export interface BridgeConfig {
   skillsRoot: string;
   stateDir: string;
   connectorToken: string;
-  codexExecutable: string;
   mcpRegistryPath: string;
 }
 
@@ -27,7 +26,6 @@ const configSchema = z.object({
   skillsRoot: z.string().trim().min(1),
   stateDir: z.string().trim().min(1),
   connectorToken: z.string().trim().min(1),
-  codexExecutable: z.string().trim().min(1),
   mcpRegistryPath: z.string().trim().min(1),
 });
 
@@ -52,7 +50,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): BridgeConfig {
     skillsRoot: env.CODEX_SKILLS_ROOT?.trim() || `${workspaceRoot}/.codex/skills`,
     stateDir: env.CODEX_STATE_DIR?.trim() || `${workspaceRoot}/.codex/state`,
     connectorToken,
-    codexExecutable: env.CODEX_EXECUTABLE?.trim() || 'codex',
     mcpRegistryPath: env.CODEX_MCP_REGISTRY?.trim() || `${workspaceRoot}/mcp-registry.json`,
   });
 

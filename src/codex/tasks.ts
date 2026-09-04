@@ -13,6 +13,7 @@ export interface RunningTask extends TaskRequest {
   id: string;
   state: TaskState;
   output: string;
+  outputTruncated: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -70,6 +71,7 @@ export class TaskStore {
       skillIds: [...request.skillIds],
       state: 'queued',
       output: '',
+      outputTruncated: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -88,7 +90,9 @@ export class TaskStore {
 
   async appendOutput(id: string, output: string): Promise<RunningTask> {
     const task = await this.get(id);
-    task.output = truncate(Buffer.concat([Buffer.from(task.output, 'utf8'), Buffer.from(redact(output), 'utf8')]), this.maxOutputBytes);
+    const combined = Buffer.concat([Buffer.from(task.output, 'utf8'), Buffer.from(redact(output), 'utf8')]);
+    task.outputTruncated ||= combined.length > this.maxOutputBytes;
+    task.output = truncate(combined, this.maxOutputBytes);
     task.updatedAt = new Date().toISOString();
     await this.persist(task);
     return task;
@@ -118,7 +122,10 @@ export class TaskStore {
 }
 
 function redact(value: string): string {
-  return value.replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]');
+  return value
+    .replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/(["'])(token|api_key|password)\1\s*:\s*(["'])[^"']*\3/gi, '$1$2$1:[REDACTED]')
+    .replace(/\bauthorization\s*:\s*bearer\s+[^\s,;]+/gi, 'Authorization: Bearer [REDACTED]');
 }
 
 function truncate(value: Buffer, maxBytes: number): string {

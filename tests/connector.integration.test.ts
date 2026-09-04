@@ -73,6 +73,8 @@ describe('authenticated connector', () => {
       expect(await server.call('list_skills', {}, auth)).toMatchObject({ skills: [{ id: 'review' }] });
       expect(await server.call('call_mcp_tool', { serverId: 'lint', tool: 'check', input: {} }, auth)).toMatchObject({ ok: true });
       const task = await server.call('codex_submit', { prompt: 'Review.', skillIds: ['review'] }, auth) as { id: string };
+      expect(await server.call('codex_status', { taskId: task.id }, auth)).toMatchObject({ state: 'running' });
+      await new Promise((resolve) => setTimeout(resolve, 10));
       expect(await server.call('codex_status', { taskId: task.id }, auth)).toMatchObject({ state: 'succeeded' });
     } finally {
       await server.close();

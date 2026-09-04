@@ -5,6 +5,11 @@ export interface PathPolicy {
   resolve(relativePath: string): Promise<string>;
 }
 
+export interface PathPolicyOptions {
+  /** Canonical directories which workspace tools must never disclose. */
+  deniedRoots?: string[];
+}
+
 const SENSITIVE_NAMES = new Set(['.env', 'credentials']);
 const SENSITIVE_EXTENSIONS = new Set(['.pem', '.key']);
 
@@ -46,9 +51,10 @@ async function canonicalizeCandidate(candidate: string): Promise<string> {
   }
 }
 
-export async function createPathPolicy(root: string): Promise<PathPolicy> {
+export async function createPathPolicy(root: string, options: PathPolicyOptions = {}): Promise<PathPolicy> {
   const canonicalRoot = await realpath(root);
   const rootWithSeparator = canonicalRoot.endsWith(path.sep) ? canonicalRoot : `${canonicalRoot}${path.sep}`;
+  const deniedRoots = await Promise.all((options.deniedRoots ?? []).map(async (deniedRoot) => canonicalizeCandidate(deniedRoot)));
 
   return {
     async resolve(relativePath: string): Promise<string> {
@@ -71,8 +77,16 @@ export async function createPathPolicy(root: string): Promise<PathPolicy> {
       if (relativeToRoot === '..' || relativeToRoot.startsWith(`..${path.sep}`) || !canonicalCandidate.startsWith(rootWithSeparator) && canonicalCandidate !== canonicalRoot) {
         throw new Error('path resolves outside the allowed root');
       }
+      if (deniedRoots.some((deniedRoot) => isContainedBy(canonicalCandidate, deniedRoot))) {
+        throw new Error('path resolves into a denied operational directory');
+      }
 
       return canonicalCandidate;
     },
   };
+}
+
+function isContainedBy(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
