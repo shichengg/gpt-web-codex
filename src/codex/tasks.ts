@@ -20,22 +20,49 @@ export interface RunningTask extends TaskRequest {
 
 export interface TaskStoreOptions {
   maxOutputBytes?: number;
+  maxPromptBytes?: number;
+  maxSkillIdBytes?: number;
+  maxSkillIds?: number;
+  maxMetadataBytes?: number;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
 
 export class TaskStore {
   private readonly maxOutputBytes: number;
+  private readonly maxPromptBytes: number;
+  private readonly maxSkillIdBytes: number;
+  private readonly maxSkillIds: number;
+  private readonly maxMetadataBytes: number;
 
   constructor(private readonly stateDir: string, options: TaskStoreOptions = {}) {
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    if (!Number.isInteger(this.maxOutputBytes) || this.maxOutputBytes < 1) {
-      throw new Error('maxOutputBytes must be a positive integer');
+    this.maxPromptBytes = options.maxPromptBytes ?? 256 * 1024;
+    this.maxSkillIdBytes = options.maxSkillIdBytes ?? 64;
+    this.maxSkillIds = options.maxSkillIds ?? 64;
+    this.maxMetadataBytes = options.maxMetadataBytes ?? 512 * 1024;
+    for (const [name, value] of Object.entries({
+      maxOutputBytes: this.maxOutputBytes,
+      maxPromptBytes: this.maxPromptBytes,
+      maxSkillIdBytes: this.maxSkillIdBytes,
+      maxSkillIds: this.maxSkillIds,
+      maxMetadataBytes: this.maxMetadataBytes,
+    })) {
+      if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
     }
   }
 
   async create(request: TaskRequest): Promise<RunningTask> {
     if (!request.prompt.trim()) throw new Error('Task prompt must not be empty');
+    if (Buffer.byteLength(request.prompt, 'utf8') > this.maxPromptBytes) throw new Error('Task prompt exceeds the configured byte limit');
+    if (request.skillIds.length > this.maxSkillIds) throw new Error('Task skillIds exceeds the configured count limit');
+    for (const id of request.skillIds) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id) || Buffer.byteLength(id, 'utf8') > this.maxSkillIdBytes) {
+        throw new Error(`Task skill ID exceeds the configured format or byte limit: ${id}`);
+      }
+    }
+    const metadata = JSON.stringify({ prompt: request.prompt, skillIds: request.skillIds });
+    if (Buffer.byteLength(metadata, 'utf8') > this.maxMetadataBytes) throw new Error('Task metadata exceeds the configured byte limit');
     const now = new Date().toISOString();
     const task: RunningTask = {
       id: randomUUID(),

@@ -154,4 +154,36 @@ describe('CodexRunner', () => {
     expect(() => new CodexRunner({ ...base, maxPromptBytes: Infinity })).toThrow('maxPromptBytes');
     expect(() => new CodexRunner({ ...base, maxSkillIds: 257 })).toThrow('maxSkillIds');
   });
+
+  test('rejects malformed or oversized Skill IDs before catalog reads', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store: new TaskStore(stateDir),
+      spawn: () => fakeChild(),
+    });
+
+    await expect(runner.submit({ prompt: 'run', skillIds: ['a'.repeat(65)] })).rejects.toThrow('skill ID');
+    await expect(runner.submit({ prompt: 'run', skillIds: ['bad/id'] })).rejects.toThrow('skill ID');
+  });
+
+  test('rejects aggregate request metadata before reading Skills', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store: new TaskStore(stateDir),
+      maxMetadataBytes: 40,
+      spawn: () => fakeChild(),
+    });
+
+    await expect(runner.submit({ prompt: 'ok', skillIds: ['abcdefgh', 'abcdefgh'] })).rejects.toThrow('metadata exceeds');
+  });
 });

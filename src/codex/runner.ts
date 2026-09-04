@@ -31,6 +31,8 @@ export interface CodexRunnerOptions {
   maxSkillContextBytes?: number;
   maxPromptBytes?: number;
   maxSkillIds?: number;
+  maxSkillIdBytes?: number;
+  maxMetadataBytes?: number;
 }
 
 /** Executes only the fixed Codex CLI contract for the configured workspace. */
@@ -45,6 +47,8 @@ export class CodexRunner {
     validateBound('maxSkillContextBytes', options.maxSkillContextBytes ?? 64 * 1024, 1, 1024 * 1024);
     validateBound('maxPromptBytes', options.maxPromptBytes ?? 256 * 1024, 1, 1024 * 1024);
     validateBound('maxSkillIds', options.maxSkillIds ?? 64, 1, 256);
+    validateBound('maxSkillIdBytes', options.maxSkillIdBytes ?? 64, 1, 64);
+    validateBound('maxMetadataBytes', options.maxMetadataBytes ?? 512 * 1024, 1, 2 * 1024 * 1024);
   }
 
   async submit(request: CodexRequest): Promise<RunningTask> {
@@ -54,6 +58,16 @@ export class CodexRunner {
     }
     if (request.skillIds.length > (this.options.maxSkillIds ?? 64)) {
       throw new Error('Codex skillIds exceeds the configured count limit');
+    }
+    for (const id of request.skillIds) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)
+        || Buffer.byteLength(id, 'utf8') > (this.options.maxSkillIdBytes ?? 64)) {
+        throw new Error(`Codex skill ID exceeds the configured format or byte limit: ${id}`);
+      }
+    }
+    const metadata = JSON.stringify({ prompt: request.prompt, skillIds: request.skillIds });
+    if (Buffer.byteLength(metadata, 'utf8') > (this.options.maxMetadataBytes ?? 512 * 1024)) {
+      throw new Error('Codex request metadata exceeds the configured byte limit');
     }
     const skillContent = await this.loadSkills(request.skillIds);
     const task = await this.options.store.create(request);

@@ -53,4 +53,15 @@ describe('TaskStore', () => {
     expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(10);
     expect(output).not.toContain('�');
   });
+
+  test('validates prompt, Skill IDs, and aggregate persisted metadata independently', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-tasks-'));
+    roots.push(root);
+    const store = new TaskStore(root, { maxPromptBytes: 8, maxSkillIdBytes: 8, maxSkillIds: 2, maxMetadataBytes: 40 });
+
+    await expect(store.create({ prompt: '123456789', skillIds: [] })).rejects.toThrow('prompt exceeds');
+    await expect(store.create({ prompt: 'ok', skillIds: ['123456789'] })).rejects.toThrow('skill ID exceeds');
+    await expect(store.create({ prompt: 'ok', skillIds: ['one', 'two', 'three'] })).rejects.toThrow('skillIds exceeds');
+    await expect(store.create({ prompt: 'ok', skillIds: ['abcdefgh', 'abcdefgh'] })).rejects.toThrow('metadata exceeds');
+  });
 });
