@@ -12,6 +12,7 @@ const { createConnectorIdentity, validateTunnelSetup } = require('./connector-id
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 const { createTunnelSupervisor, redactTunnelLog } = require('./tunnel-supervisor.cjs');
 const { doctor: runDoctor, openDiagnosticLogs } = require('./doctor.cjs');
+const { createChatGptWindowController } = require('./chatgpt-window.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
 const rendererEntry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -486,6 +487,8 @@ function registerIpcHandlers(ipcMain, controller = createDefaultController(), ge
     }),
     'launcher:doctor': guarded((args) => { requireNoPayload(args, 'doctor'); return controller.doctor(); }),
     'launcher:open-logs': guarded((args) => { requireNoPayload(args, 'openLogs'); return controller.openLogs(); }),
+    'launcher:open-chatgpt': guarded((args) => { requireNoPayload(args, 'openChatGpt'); return controller.openChatGpt(); }),
+    'launcher:clear-chatgpt-session': guarded((args) => { requireNoPayload(args, 'clearChatGptSession'); return controller.clearChatGptSession(); }),
   };
 
   for (const [channel, handler] of Object.entries(handlers)) {
@@ -529,7 +532,7 @@ async function stopRuntimeBeforeQuit(runtimeSupervisor, quit, tunnelSupervisor) 
  * first quit, stop our public route and local child in order, then reissue quit
  * only after both have confirmed completion. This applies on every platform.
  */
-function installQuitGuard(app, getRuntimeSupervisor, getTunnelSupervisor) {
+function installQuitGuard(app, getRuntimeSupervisor, getTunnelSupervisor, getChatGptWindow) {
   if (!app || typeof app.on !== 'function' || typeof app.quit !== 'function' ||
       typeof getRuntimeSupervisor !== 'function' || typeof getTunnelSupervisor !== 'function') {
     throw new TypeError('Quit guard requires Electron app and supervisor accessors');
@@ -549,6 +552,7 @@ function installQuitGuard(app, getRuntimeSupervisor, getTunnelSupervisor) {
       },
       getTunnelSupervisor(),
     ).then((stopped) => {
+      getChatGptWindow?.()?.close?.();
       if (!stopped) shutdownInProgress = false;
     }).catch(() => {
       shutdownInProgress = false;
@@ -566,8 +570,16 @@ function boot() {
   let mainWindow;
   let runtimeSupervisor;
   let tunnelSupervisor;
+  let chatGptWindow;
   app.whenReady().then(async () => {
     mainWindow = createMainWindow(electron);
+    chatGptWindow = createChatGptWindowController({
+      BrowserWindow: electron.BrowserWindow,
+      session: electron.session,
+      shell: electron.shell,
+      logger: console,
+    });
+    mainWindow.on('closed', () => chatGptWindow?.close());
     const userDataPath = app.getPath('userData');
     const runtimeEntry = runtimeEntryForApp(app);
     runtimeSupervisor = createRuntimeSupervisor({
@@ -595,14 +607,18 @@ function boot() {
       coreAssetsAvailable: () => isReadableFile(runtimeEntry),
       diagnosticLogDirectory: path.join(userDataPath, 'logs'),
     });
-    registerIpcHandlers(ipcMain, controller, () => mainWindow?.webContents);
+    registerIpcHandlers(ipcMain, {
+      ...controller,
+      openChatGpt: () => chatGptWindow.open(),
+      clearChatGptSession: () => chatGptWindow.clearSession(),
+    }, () => mainWindow?.webContents);
     app.on('activate', () => {
       if (electron.BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createMainWindow(electron);
       }
     });
   });
-  installQuitGuard(app, () => runtimeSupervisor, () => tunnelSupervisor);
+  installQuitGuard(app, () => runtimeSupervisor, () => tunnelSupervisor, () => chatGptWindow);
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
       // Calling app.quit enters the guarded before-quit flow on every platform.

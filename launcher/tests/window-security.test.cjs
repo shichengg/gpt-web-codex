@@ -188,6 +188,23 @@ test('IPC routes task queries to the dedicated controller operation', async () =
   assert.deepEqual(calls, ['task-1']);
 });
 
+test('ChatGPT IPC rejects payloads and routes fixed operations', async () => {
+  const handlers = new Map();
+  const sender = { getURL: () => rendererEntryUrl };
+  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler) };
+  const calls = [];
+  registerIpcHandlers(ipcMain, {
+    openChatGpt: async () => { calls.push('open'); return { open: true }; },
+    clearChatGptSession: async () => { calls.push('clear'); },
+  }, () => sender);
+
+  assert.deepEqual(await handlers.get('launcher:open-chatgpt')({ sender }), { open: true });
+  await handlers.get('launcher:clear-chatgpt-session')({ sender });
+  assert.deepEqual(calls, ['open', 'clear']);
+  assert.throws(() => handlers.get('launcher:open-chatgpt')({ sender }, { url: 'https://evil.example' }), /payload/);
+  assert.throws(() => handlers.get('launcher:clear-chatgpt-session')({ sender }, 'unexpected'), /payload/);
+});
+
 test('setup IPC passes credentials only to the main-process setup operation', async () => {
   const handlers = new Map();
   const sender = { getURL: () => rendererEntryUrl };

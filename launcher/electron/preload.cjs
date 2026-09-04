@@ -17,6 +17,8 @@ const IPC_CHANNELS = Object.freeze({
   cancelTask: 'launcher:cancel-task',
   doctor: 'launcher:doctor',
   openLogs: 'launcher:open-logs',
+  openChatGpt: 'launcher:open-chatgpt',
+  clearChatGptSession: 'launcher:clear-chatgpt-session',
   snapshotChanged: 'launcher:snapshot-changed',
   log: 'launcher:log',
 });
@@ -49,6 +51,8 @@ function createPreloadApi(ipcRenderer) {
     cancelTask: (taskId) => ipcRenderer.invoke(IPC_CHANNELS.cancelTask, taskId),
     doctor: () => ipcRenderer.invoke(IPC_CHANNELS.doctor),
     openLogs: () => ipcRenderer.invoke(IPC_CHANNELS.openLogs),
+    openChatGpt: () => ipcRenderer.invoke(IPC_CHANNELS.openChatGpt),
+    clearChatGptSession: () => ipcRenderer.invoke(IPC_CHANNELS.clearChatGptSession),
     onSnapshot: (listener) => subscribe(ipcRenderer, IPC_CHANNELS.snapshotChanged, listener),
     onLog: (listener) => subscribe(ipcRenderer, IPC_CHANNELS.log, listener),
   });

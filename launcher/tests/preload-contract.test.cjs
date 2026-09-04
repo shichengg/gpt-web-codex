@@ -34,6 +34,8 @@ test('preload exposes only declared launcher methods', () => {
     'cancelTask',
     'doctor',
     'openLogs',
+    'openChatGpt',
+    'clearChatGptSession',
     'onSnapshot',
     'onLog',
   ]);
@@ -116,6 +118,22 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
   assert.deepEqual(Object.keys(calls[0][1]), [
     'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
     'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
-    'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
+    'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs', 'openChatGpt',
+    'clearChatGptSession', 'onSnapshot', 'onLog',
+  ]);
+});
+
+test('preload forwards ChatGPT controls without payloads', async () => {
+  const calls = [];
+  const api = createPreloadApi({
+    invoke: (...args) => { calls.push(args); return Promise.resolve(); },
+    on() {},
+    removeListener() {},
+  });
+  await api.openChatGpt();
+  await api.clearChatGptSession();
+  assert.deepEqual(calls, [
+    ['launcher:open-chatgpt'],
+    ['launcher:clear-chatgpt-session'],
   ]);
 });

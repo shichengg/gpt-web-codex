@@ -9,6 +9,8 @@ export interface LauncherSnapshot {
   tunnelMessage?: string;
 }
 
+export type UiTheme = 'system' | 'light' | 'dark';
+
 export interface DiagnosticReport {
   checks: Array<{ id: string; status: 'ok' | 'warning' | 'error'; message?: string }>;
 }
@@ -74,6 +76,8 @@ export interface GptWebCodexApi {
   cancelTask(taskId: string): Promise<LauncherSnapshot>;
   doctor(): Promise<DiagnosticReport>;
   openLogs(): Promise<void>;
+  openChatGpt(): Promise<void>;
+  clearChatGptSession(): Promise<void>;
   onSnapshot(listener: (snapshot: LauncherSnapshot) => void): () => void;
   onLog(listener: (entry: string) => void): () => void;
 }
