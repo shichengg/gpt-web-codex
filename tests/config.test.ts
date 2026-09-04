@@ -16,5 +16,47 @@ describe('loadConfig', () => {
     expect(config.host).toBe('127.0.0.1');
     expect(config.port).toBe(48765);
     expect(config.workspaceRoot).toBe('C:/work');
+    expect(config.skillsRoot).toBe('C:/skills');
+    expect(config.stateDir).toBe('C:/state');
+  });
+
+  test('derives Skills, state, and registry paths from the workspace root', () => {
+    const config = loadConfig({
+      CODEX_WORKSPACE_ROOT: 'C:/work',
+      CODEX_CONNECTOR_TOKEN: 'test-token',
+    });
+
+    expect(config.skillsRoot).toBe('C:/work/.codex/skills');
+    expect(config.stateDir).toBe('C:/work/.codex/state');
+    expect(config.mcpRegistryPath).toBe('C:/work/mcp-registry.json');
+  });
+
+  test('rejects non-loopback hosts', () => {
+    expect(() => loadConfig({
+      CODEX_WORKSPACE_ROOT: 'C:/work',
+      CODEX_CONNECTOR_TOKEN: 'test-token',
+      CODEX_HOST: '0.0.0.0',
+    })).toThrow(ConfigError);
+  });
+
+  test('rejects ports outside the valid range', () => {
+    for (const port of ['0', '65536', 'not-a-number']) {
+      expect(() => loadConfig({
+        CODEX_WORKSPACE_ROOT: 'C:/work',
+        CODEX_CONNECTOR_TOKEN: 'test-token',
+        CODEX_PORT: port,
+      })).toThrow(ConfigError);
+    }
+  });
+
+  test('rejects whitespace-only required values', () => {
+    expect(() => loadConfig({
+      CODEX_WORKSPACE_ROOT: '   ',
+      CODEX_CONNECTOR_TOKEN: 'test-token',
+    })).toThrow(ConfigError);
+    expect(() => loadConfig({
+      CODEX_WORKSPACE_ROOT: 'C:/work',
+      CODEX_CONNECTOR_TOKEN: '\t',
+    })).toThrow(ConfigError);
   });
 });
