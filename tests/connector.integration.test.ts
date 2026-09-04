@@ -14,7 +14,7 @@ import { createGitTools } from '../src/tools/git.js';
 import { createWorkspaceTools } from '../src/tools/workspace.js';
 import { createServer, type ConnectorServer, type ConnectorDependencies } from '../src/server.js';
 
-async function fixture(http = false): Promise<{ server: ConnectorServer; auth: { token: string } }> {
+async function fixture(http = false, codexOverride?: CodexRunner): Promise<{ server: ConnectorServer; auth: { token: string } }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-'));
   const skillsRoot = path.join(root, 'skills');
   const stateDir = path.join(root, 'state');
@@ -49,7 +49,7 @@ async function fixture(http = false): Promise<{ server: ConnectorServer; auth: {
     skills: catalog,
     mcp: registry,
     mcpTransport: transport,
-    codex: runner,
+    codex: codexOverride ?? runner,
     tasks: taskStore,
     ...(http ? { http: { host: '127.0.0.1', port: 0 } } : {}),
   };
@@ -121,5 +121,18 @@ describe('authenticated connector', () => {
     await Promise.race([ended, new Promise((resolve) => setTimeout(resolve, 500))]);
     request.destroy();
     expect(server.httpAddress).toBeUndefined();
+  });
+
+  test('propagates close cancellation to an active Codex operation', async () => {
+    const blockingCodex = {
+      submit: async (_request: unknown, signal?: AbortSignal) => await new Promise<{ id: string; state: 'cancelled'; createdAt: string; updatedAt: string }>((resolve) => {
+        signal?.addEventListener('abort', () => resolve({ id: '00000000-0000-0000-0000-000000000000', state: 'cancelled', createdAt: '', updatedAt: '' }), { once: true });
+      }),
+    };
+    const { server, auth } = await fixture(false, blockingCodex as unknown as CodexRunner);
+    const pending = server.call('codex_submit', { prompt: 'Wait.', skillIds: [] }, auth);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await server.close();
+    await expect(pending).resolves.toMatchObject({ state: 'cancelled' });
   });
 });

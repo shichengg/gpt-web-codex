@@ -51,7 +51,7 @@ export class CodexRunner {
     validateBound('maxMetadataBytes', options.maxMetadataBytes ?? 512 * 1024, 1, 2 * 1024 * 1024);
   }
 
-  async submit(request: CodexRequest): Promise<RunningTask> {
+  async submit(request: CodexRequest, signal?: AbortSignal): Promise<RunningTask> {
     if (!request.prompt.trim()) throw new Error('Codex prompt must not be empty');
     if (Buffer.byteLength(request.prompt, 'utf8') > (this.options.maxPromptBytes ?? 256 * 1024)) {
       throw new Error('Codex prompt exceeds the configured byte limit');
@@ -101,6 +101,12 @@ export class CodexRunner {
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);
 
+    const abort = () => {
+      child.kill();
+    };
+    if (signal?.aborted) abort();
+    signal?.addEventListener('abort', abort, { once: true });
+
     const result = await new Promise<'succeeded' | 'failed' | 'timed_out' | 'cancelled'>((resolve) => {
       timer = setTimeout(() => {
         child.kill();
@@ -116,7 +122,15 @@ export class CodexRunner {
         finish(state, code === 0 ? undefined : `Codex exited with code ${code ?? 'unknown'}`);
         resolve(state);
       });
+      const cancel = () => {
+        child.kill();
+        finish('cancelled', 'Codex task cancelled');
+        resolve('cancelled');
+      };
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) cancel();
     });
+    signal?.removeEventListener('abort', abort);
     await outputWrites;
     return this.options.store.complete(task.id, result, completionError);
   }

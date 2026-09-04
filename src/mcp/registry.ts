@@ -10,7 +10,7 @@ export interface RegisteredMcpServer {
 }
 
 export interface McpTransport {
-  call(server: RegisteredMcpServer, tool: string, input: unknown): Promise<unknown>;
+  call(server: RegisteredMcpServer, tool: string, input: unknown, signal?: AbortSignal): Promise<unknown>;
 }
 
 const serverSchema = z.object({
@@ -59,7 +59,7 @@ export class McpRegistry {
     return [...this.servers.values()].map((server) => ({ ...server, args: [...server.args], allowedTools: [...server.allowedTools] }));
   }
 
-  async call(serverId: string, tool: string, input: unknown, transport: McpTransport): Promise<unknown> {
+  async call(serverId: string, tool: string, input: unknown, transport: McpTransport, signal?: AbortSignal): Promise<unknown> {
     const server = this.servers.get(serverId);
     if (!server) {
       throw new Error(`Unknown MCP server: ${serverId}`);
@@ -67,7 +67,7 @@ export class McpRegistry {
     if (!server.allowedTools.includes(tool)) {
       throw new Error(`MCP tool is not allowed: ${serverId}/${tool}`);
     }
-    return transport.call(server, tool, input);
+    return transport.call(server, tool, input, signal);
   }
 }
 

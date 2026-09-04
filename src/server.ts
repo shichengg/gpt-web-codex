@@ -43,6 +43,8 @@ interface ActiveMcpSession {
 interface McpRuntime {
   sessions: Set<ActiveMcpSession>;
   requests: Set<IncomingMessage>;
+  operations: Set<Promise<unknown>>;
+  controllers: Set<AbortController>;
 }
 
 const tools = {
@@ -65,7 +67,7 @@ const tools = {
 export async function createServer(dependencies: ConnectorDependencies): Promise<ConnectorServer> {
   if (!dependencies.token.trim()) throw new Error('Connector token must not be empty');
   let closed = false;
-  const runtime: McpRuntime = { sessions: new Set(), requests: new Set() };
+  const runtime: McpRuntime = { sessions: new Set(), requests: new Set(), operations: new Set(), controllers: new Set() };
   let httpServer: HttpServer | undefined;
   if (dependencies.http) {
     httpServer = createHttpServer((request, response) => {
@@ -88,10 +90,21 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
       if (!schema) return { error: { code: 'unknown_tool', message: `Unknown tool: ${tool}` } };
       const parsed = schema.safeParse(input);
       if (!parsed.success) return { error: { code: 'validation_error', message: 'Invalid tool input' } };
+      const controller = new AbortController();
+      runtime.controllers.add(controller);
+      const operation = (async () => {
+        try {
+          return await route(tool, parsed.data, dependencies, controller.signal);
+        } catch (error) {
+          return { error: classifyError(error) };
+        }
+      })();
+      runtime.operations.add(operation);
       try {
-        return await route(tool, parsed.data, dependencies);
-      } catch (error) {
-        return { error: classifyError(error) };
+        return await operation;
+      } finally {
+        runtime.operations.delete(operation);
+        runtime.controllers.delete(controller);
       }
     },
     get httpAddress() {
@@ -102,6 +115,8 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
       if (closed) return;
       closed = true;
       for (const request of runtime.requests) request.destroy();
+      for (const controller of runtime.controllers) controller.abort();
+      await Promise.allSettled([...runtime.operations]);
       await Promise.all([...runtime.sessions].map(async ({ server, transport }) => {
         await Promise.allSettled([server.close(), transport.close()]);
       }));
@@ -126,7 +141,7 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
   }
   runtime.requests.add(request);
   const body = await readJson(request);
-  const server = createMcpServer(dependencies);
+  const server = createMcpServer(dependencies, runtime);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const session = { server, transport };
   runtime.sessions.add(session);
@@ -140,7 +155,7 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
   }
 }
 
-function createMcpServer(dependencies: ConnectorDependencies): McpServer {
+function createMcpServer(dependencies: ConnectorDependencies, runtime: McpRuntime): McpServer {
   const server = new McpServer({ name: 'gpt-web-codex', version: '0.1.0' });
   for (const name of Object.keys(tools)) {
     server.registerTool(name, { description: `GPT Web Codex ${name}`, inputSchema: tools[name as keyof typeof tools] }, (async (input: unknown) => {
@@ -149,12 +164,19 @@ function createMcpServer(dependencies: ConnectorDependencies): McpServer {
       if (!parsed.success) {
         return { isError: true, content: [{ type: 'text', text: 'Invalid tool input' }] };
       }
-      try {
-        const result = await route(name, parsed.data, dependencies);
+      const controller = new AbortController();
+      runtime.controllers.add(controller);
+      const operation = (async () => {
+       try {
+        const result = await route(name, parsed.data, dependencies, controller.signal);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
-      } catch {
-        return { isError: true, content: [{ type: 'text', text: 'Connector operation failed' }] };
+      } catch (cause) {
+        const error = classifyError(cause);
+        return { isError: true, content: [{ type: 'text', text: error.message }], structuredContent: { error } };
       }
+      })();
+      runtime.operations.add(operation);
+      try { return await operation; } finally { runtime.operations.delete(operation); runtime.controllers.delete(controller); }
     }) as never);
   }
   return server;
@@ -180,7 +202,7 @@ function authorized(expected: string, actual: string | undefined): boolean {
   return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
 }
 
-async function route(tool: string, input: unknown, dependencies: ConnectorDependencies): Promise<Record<string, unknown>> {
+async function route(tool: string, input: unknown, dependencies: ConnectorDependencies, signal?: AbortSignal): Promise<Record<string, unknown>> {
   switch (tool) {
     case 'workspace_info': return { ...(await dependencies.workspace.info()) };
     case 'list_directory': return { entries: await dependencies.workspace.listDirectory((input as { relativePath: string }).relativePath) };
@@ -198,10 +220,10 @@ async function route(tool: string, input: unknown, dependencies: ConnectorDepend
     }
     case 'call_mcp_tool': {
       const value = input as { serverId: string; tool: string; input: unknown };
-      return asRecord(await dependencies.mcp.call(value.serverId, value.tool, value.input, dependencies.mcpTransport));
+      return asRecord(await dependencies.mcp.call(value.serverId, value.tool, value.input, dependencies.mcpTransport, signal));
     }
     case 'codex_submit': {
-      const task = await dependencies.codex.submit(input as { prompt: string; skillIds: string[] });
+      const task = await dependencies.codex.submit(input as { prompt: string; skillIds: string[] }, signal);
       return { id: task.id, state: task.state, createdAt: task.createdAt, updatedAt: task.updatedAt };
     }
     case 'codex_status': {
