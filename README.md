@@ -8,7 +8,7 @@ and does not contain a browser extension.
 ## Requirements
 
 - Node.js 20 or newer
-- A working `codex` executable on `PATH` (or `CODEX_EXECUTABLE`)
+- A working `codex` executable on `PATH`
 - A workspace directory that the connector is allowed to inspect
 - A long, private connector token
 
@@ -35,7 +35,6 @@ workspace:
 | `CODEX_PORT` | no | `48765` |
 | `CODEX_SKILLS_ROOT` | no | `<workspace>/.codex/skills` |
 | `CODEX_STATE_DIR` | no | `<workspace>/.codex/state` |
-| `CODEX_EXECUTABLE` | no | `codex` |
 | `CODEX_MCP_REGISTRY` | no | `<workspace>/mcp-registry.json` |
 
 Start locally (PowerShell):
@@ -47,10 +46,13 @@ npm start
 ```
 
 The MCP endpoint is `http://127.0.0.1:48765/mcp` and requires
-`Authorization: Bearer <private-token>`. Keep the service on loopback during
-development. If ChatGPT must reach it from another machine, put it behind an
-authenticated HTTPS gateway or a private tunnel, preserve the bearer-token
-check, and do not expose the service publicly without an additional access
+`Authorization: Bearer <private-token>`. This loopback bridge is intended for
+compatible MCP clients running on the same host. ChatGPT cannot register or
+reach a loopback address with a manually supplied Bearer token. To connect
+ChatGPT, deploy an explicit HTTPS endpoint or tunnel with connector-supported
+authentication (including OAuth or a supported token exchange); that
+deployment and authentication layer is outside this MVP and is not currently
+implemented. Do not expose the local service publicly without such an access
 control layer.
 
 The connector binds to exactly one workspace at startup. Restart it with a
@@ -133,12 +135,13 @@ commands.
 
 ## ChatGPT setup
 
-Run the connector, register its `/mcp` address in the ChatGPT connector
-settings, and use the same bearer token. Start by calling `workspace_info`,
-then `list_skills` and `list_mcp_servers` to verify the binding. Submit only
-the task and Skills needed for the current workspace. A successful
-`codex_submit` returns a task ID; poll `codex_status` and fetch the bounded
-result with `codex_output`.
+Run the connector with a same-host compatible MCP client. Start by calling
+`workspace_info`, then `list_skills` and `list_mcp_servers` to verify the
+binding. Submit only the task and Skills needed for the current workspace. A
+successful `codex_submit` returns a task ID; poll `codex_status` and fetch the
+bounded result with `codex_output`. A ChatGPT deployment requires the
+explicit HTTPS/tunnel and connector authentication layer described above;
+ChatGPT registration is outside this MVP.
 
 ## License and attribution
 
