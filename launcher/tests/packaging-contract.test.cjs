@@ -10,7 +10,8 @@ const packageJson = require('../package.json');
 const { AUDITED_CORE_FILES, prepareCore } = require('../scripts/prepare-core.cjs');
 const { Arch, Platform } = require('electron-builder');
 const { PACKAGE_BUILD_OPTIONS, windowsTargets } = require('../scripts/package.cjs');
-const { resolvePackagedExecutable } = require('../scripts/smoke-package.cjs');
+const { assertPackagedCoreAssets, resolvePackagedExecutable } = require('../scripts/smoke-package.cjs');
+const { verifyCoreRuntimeLoadability } = require('../electron/main.cjs');
 
 test('Windows package targets a per-user NSIS installer and audited core resources', () => {
   assert.equal(packageJson.build.asar, true);
@@ -22,7 +23,8 @@ test('Windows package targets a per-user NSIS installer and audited core resourc
   assert.equal(packageJson.build.win.target.includes('nsis'), true);
   assert.equal(packageJson.build.nsis.perMachine, false);
   assert.deepEqual(packageJson.build.extraResources, [
-    { from: '.package/core', to: 'core', filter: ['**/*'] },
+    { from: '.package/core', to: 'core', filter: ['**/*', '!node_modules{,/**/*}'] },
+    { from: '.package/core/node_modules', to: 'core/node_modules', filter: ['**/*'] },
   ]);
   assert.equal(packageJson.scripts['package:win'], 'node scripts/package.cjs');
   assert.equal(packageJson.scripts['smoke:package'], 'node scripts/smoke-package.cjs');
@@ -81,6 +83,63 @@ test('smoke command selects the unpacked application rather than the NSIS instal
   await fs.writeFile(executable, 'application');
 
   assert.equal(await resolvePackagedExecutable({ artifactsDir: artifacts, productName: 'GPT Web Codex' }), executable);
+});
+
+test('smoke package check requires the audited core entrypoint and runtime dependencies', async (t) => {
+  const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-core-assets-'));
+  t.after(() => fs.rm(artifacts, { recursive: true, force: true }));
+  const core = path.join(artifacts, 'win-unpacked', 'resources', 'core');
+  await fs.mkdir(path.join(core, 'node_modules', '@modelcontextprotocol', 'sdk'), { recursive: true });
+  await fs.mkdir(path.join(core, 'node_modules', 'zod'), { recursive: true });
+  await fs.writeFile(path.join(core, 'index.js'), 'export {};');
+  await fs.writeFile(path.join(core, 'package.json'), JSON.stringify({ type: 'module' }));
+  await fs.writeFile(path.join(core, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'), '{}');
+  await fs.writeFile(path.join(core, 'node_modules', 'zod', 'package.json'), '{}');
+
+  await assertPackagedCoreAssets(path.join(artifacts, 'win-unpacked'));
+  await fs.rm(path.join(core, 'node_modules', 'zod'), { recursive: true, force: true });
+  await assert.rejects(() => assertPackagedCoreAssets(path.join(artifacts, 'win-unpacked')), /runtime dependency/i);
+});
+
+test('diagnostic core probe runs the packaged core without NODE_PATH fallback', async () => {
+  const child = new (require('node:events'))();
+  let invocation;
+  const probe = verifyCoreRuntimeLoadability('C:\\package\\resources\\core\\index.js', {
+    executable: 'C:\\package\\GPT Web Codex.exe',
+    environment: {
+      NODE_PATH: 'C:\\ambient\\node_modules',
+      CODEX_CONNECTOR_TOKEN: 'must-not-be-forwarded',
+      KEEP: 'allowed',
+    },
+    spawn: (...args) => {
+      invocation = args;
+      queueMicrotask(() => child.emit('exit', 0));
+      return child;
+    },
+  });
+
+  await probe;
+  assert.deepEqual(invocation.slice(0, 2), [
+    'C:\\package\\GPT Web Codex.exe',
+    ['C:\\package\\resources\\core\\index.js', '--help'],
+  ]);
+  assert.equal(invocation[2].cwd, 'C:\\package\\resources\\core');
+  assert.equal(invocation[2].env.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(invocation[2].env.NODE_PATH, undefined);
+  assert.equal(invocation[2].env.CODEX_CONNECTOR_TOKEN, undefined);
+  assert.equal(invocation[2].env.KEEP, 'allowed');
+});
+
+test('diagnostic core probe rejects a failed runtime import', async () => {
+  const child = new (require('node:events'))();
+  const probe = verifyCoreRuntimeLoadability('C:\\package\\resources\\core\\index.js', {
+    spawn: () => {
+      queueMicrotask(() => child.emit('exit', 1));
+      return child;
+    },
+  });
+
+  await assert.rejects(probe, /core runtime could not be loaded/i);
 });
 
 async function exists(filePath) {

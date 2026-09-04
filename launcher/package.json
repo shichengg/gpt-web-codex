@@ -31,6 +31,14 @@
         "from": ".package/core",
         "to": "core",
         "filter": [
+          "**/*",
+          "!node_modules{,/**/*}"
+        ]
+      },
+      {
+        "from": ".package/core/node_modules",
+        "to": "core/node_modules",
+        "filter": [
           "**/*"
         ]
       }

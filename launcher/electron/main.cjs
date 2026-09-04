@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const { spawn: spawnChild } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
 const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
@@ -615,14 +616,54 @@ async function isReadableFile(filePath) {
 function bootDiagnosticMode(electron) {
   const { app } = electron;
   app.whenReady().then(async () => {
+    const runtimeEntry = runtimeEntryForApp(app);
+    await verifyCoreRuntimeLoadability(runtimeEntry);
     const report = await runDoctor({
-      coreAssetsAvailable: await isReadableFile(runtimeEntryForApp(app)),
+      coreAssetsAvailable: await isReadableFile(runtimeEntry),
       tunnelAvailable: false,
     });
     // The smoke harness receives only this fixed-shape, redaction-safe report.
     process.stdout.write(`${JSON.stringify(report)}\n`);
     app.exit(0);
   }).catch(() => app.exit(1));
+}
+
+/**
+ * Load the packaged ESM runtime graph without starting the connector. The
+ * --help path imports all runtime dependencies but exits before configuration
+ * or network startup. NODE_PATH is removed to prevent ambient repo modules
+ * from masking an incomplete resources/core/node_modules directory.
+ */
+function verifyCoreRuntimeLoadability(runtimeEntry, options = {}) {
+  if (typeof runtimeEntry !== 'string' || !path.isAbsolute(runtimeEntry)) {
+    return Promise.reject(new TypeError('Core runtime entrypoint must be an absolute path'));
+  }
+  const executable = options.executable ?? process.execPath;
+  const spawn = options.spawn ?? spawnChild;
+  const environment = { ...(options.environment ?? process.env), ELECTRON_RUN_AS_NODE: '1' };
+  for (const name of ['NODE_PATH', 'CODEX_CONNECTOR_TOKEN', 'OPENAI_API_KEY', 'OPENAI_API_TOKEN']) delete environment[name];
+
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(new Error('Packaged core runtime could not be loaded.'));
+    let child;
+    try {
+      child = spawn(executable, [runtimeEntry, '--help'], {
+        cwd: path.dirname(runtimeEntry),
+        env: environment,
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      fail();
+      return;
+    }
+    child.once('error', fail);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else fail();
+    });
+  });
 }
 
 /**
@@ -655,6 +696,7 @@ module.exports = {
   isAllowedExternalUrl,
   rendererEntryUrl,
   runtimeEntryForApp,
+  verifyCoreRuntimeLoadability,
   registerIpcHandlers,
   validateMcpRegistryDraft,
   validateTunnelSetupDraft,

@@ -6,11 +6,30 @@ const path = require('node:path');
 const { build: buildConfig } = require('../package.json');
 
 const SMOKE_TIMEOUT_MS = 30_000;
+const CORE_RUNTIME_PACKAGES = Object.freeze(['@modelcontextprotocol/sdk', 'zod']);
 
 async function smokePackage({ artifactsDir = path.join(__dirname, '..', 'artifacts') } = {}) {
   const executable = await resolvePackagedExecutable({ artifactsDir, productName: buildConfig.productName });
+  await assertPackagedCoreAssets(path.dirname(executable));
   await runDiagnosticMode(executable);
   return executable;
+}
+
+async function assertPackagedCoreAssets(appOutDir) {
+  const coreDirectory = path.join(appOutDir, 'resources', 'core');
+  await assertFile(path.join(coreDirectory, 'index.js'), 'Packaged core runtime entrypoint is missing.');
+  await assertFile(path.join(coreDirectory, 'package.json'), 'Packaged core runtime manifest is missing.');
+  for (const packageName of CORE_RUNTIME_PACKAGES) {
+    await assertFile(
+      path.join(coreDirectory, 'node_modules', packageName, 'package.json'),
+      `Packaged core runtime dependency is missing: ${packageName}.`,
+    );
+  }
+}
+
+async function assertFile(filePath, message) {
+  const stat = await fs.stat(filePath).catch(() => undefined);
+  if (!stat?.isFile()) throw new Error(message);
 }
 
 async function resolvePackagedExecutable({ artifactsDir, productName }) {
@@ -78,4 +97,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { resolvePackagedExecutable, runDiagnosticMode, smokePackage };
+module.exports = { assertPackagedCoreAssets, resolvePackagedExecutable, runDiagnosticMode, smokePackage };
