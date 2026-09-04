@@ -61,6 +61,21 @@ test('persists an active profile atomically and rejects secret-shaped profile fi
   assert.equal((await fs.readdir(root)).some((name) => name.includes('.tmp-')), false);
 });
 
+test('rejects more than 64 default Skills before profile persistence', async (t) => {
+  const { root, store } = await makeProfileStore();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = await makeWorkspace(root, 'one');
+  const defaults = Array.from({ length: 65 }, (_value, index) => `skill-${index}`);
+
+  await assert.rejects(
+    () => store.save({ id: 'one', ...workspace, enabledSkillIds: defaults }),
+    /invalid bounded fields/i,
+  );
+
+  assert.deepEqual(await store.list(), []);
+  await assert.rejects(() => fs.readFile(path.join(root, 'profiles.json'), 'utf8'), { code: 'ENOENT' });
+});
+
 test('keeps enabled Skill defaults when an existing profile path is edited', async (t) => {
   const { root, store } = await makeProfileStore();
   t.after(() => fs.rm(root, { recursive: true, force: true }));

@@ -162,6 +162,10 @@ test('IPC validates bounded Skill, registry, and task payloads before controller
   registerIpcHandlers(ipcMain, controller, () => sender);
 
   assert.throws(() => handlers.get('launcher:save-skills')({ sender }, ['valid', '../escape']), /Skill IDs/);
+  assert.throws(
+    () => handlers.get('launcher:save-skills')({ sender }, Array.from({ length: 65 }, (_value, index) => `skill-${index}`)),
+    /Skill IDs/,
+  );
   assert.throws(() => handlers.get('launcher:save-mcp-registry')({ sender }, {
     servers: [{ id: 'local', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['*'], timeoutMs: 5000 }],
   }), /allowedTools/);

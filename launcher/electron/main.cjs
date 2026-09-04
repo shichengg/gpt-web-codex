@@ -4,7 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn: spawnChild } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
-const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
+const { MAX_ENABLED_SKILLS, createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
 const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
 const { RuntimeClient } = require('./runtime-client.cjs');
 const { createRuntimeSupervisor } = require('./runtime-supervisor.cjs');
@@ -399,7 +399,7 @@ function requireNoPayload(args, operation) {
 }
 
 function validateSkillIds(skillIds) {
-  if (!Array.isArray(skillIds) || skillIds.length > 128 ||
+  if (!Array.isArray(skillIds) || skillIds.length > MAX_ENABLED_SKILLS ||
     new Set(skillIds).size !== skillIds.length ||
     !skillIds.every((id) => typeof id === 'string' && SKILL_ID.test(id))) {
     throw new TypeError('Skill IDs must be a unique bounded list of valid IDs');

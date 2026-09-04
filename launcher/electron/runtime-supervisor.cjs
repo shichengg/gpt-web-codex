@@ -3,6 +3,7 @@
 const { randomUUID } = require('node:crypto');
 const { spawn: spawnChild } = require('node:child_process');
 const path = require('node:path');
+const { MAX_ENABLED_SKILLS } = require('./profiles.cjs');
 const { redactAndBound } = require('./runtime-client.cjs');
 
 const PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -290,7 +291,7 @@ function validateStart(profile, mcpRegistryPath) {
 
 function validatedDefaultSkillIds(profile) {
   if (profile.enabledSkillIds === undefined) return [];
-  if (!Array.isArray(profile.enabledSkillIds) || profile.enabledSkillIds.length > 64 ||
+  if (!Array.isArray(profile.enabledSkillIds) || profile.enabledSkillIds.length > MAX_ENABLED_SKILLS ||
       new Set(profile.enabledSkillIds).size !== profile.enabledSkillIds.length ||
       !profile.enabledSkillIds.every((id) => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id))) {
     throw new TypeError('Runtime supervisor requires validated profile Skill defaults');

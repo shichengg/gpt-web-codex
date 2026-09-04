@@ -7,8 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
+const { createConnectorIdentity } = require('../electron/connector-identity.cjs');
 const { createProfileController } = require('../electron/main.cjs');
 const { createRuntimeSupervisor } = require('../electron/runtime-supervisor.cjs');
+const { createTunnelSupervisor } = require('../electron/tunnel-supervisor.cjs');
 
 function readyChild() {
   const child = new EventEmitter();
@@ -34,6 +36,7 @@ test('runs a profile lifecycle with default Skills, fixed activity calls, and cl
 
   const spawned = [];
   const activityCalls = [];
+  const tunnelCalls = [];
   const child = readyChild();
   const runtime = createRuntimeSupervisor({
     appDataPath: path.join(root, 'private'),
@@ -51,15 +54,27 @@ test('runs a profile lifecycle with default Skills, fixed activity calls, and cl
       return { id: input.taskId, state: 'cancelled' };
     },
   });
-  const tunnelCalls = [];
+  const credentials = {
+    tunnelId: `tunnel_${'a'.repeat(32)}`,
+    runtimeKey: 'runtime-key-that-must-remain-private',
+  };
+  const tunnel = createTunnelSupervisor({
+    getActiveRuntimeUrl: () => runtime.getActiveRuntimeUrl(),
+    runTunnel: async (configuration) => {
+      tunnelCalls.push(['run', configuration]);
+      return { alias: 'test-tunnel' };
+    },
+    checkHealth: async () => true,
+    stopTunnel: async (owned) => { tunnelCalls.push(['stop', owned]); },
+  });
+  const identity = await createConnectorIdentity(path.join(root, 'private', 'connector.json'));
+  await identity.configure(credentials);
   const controller = await createProfileController({
     userDataPath: path.join(root, 'private'),
     shell: { openPath: async () => '' },
     runtimeSupervisor: runtime,
-    tunnelSupervisor: {
-      async stop() { tunnelCalls.push('stop'); },
-      status: () => ({ state: 'stopped', configured: false, paired: false }),
-    },
+    tunnelSupervisor: tunnel,
+    connectorIdentity: identity,
   });
 
   await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot, enabledSkillIds: ['review'] });
@@ -69,10 +84,24 @@ test('runs a profile lifecycle with default Skills, fixed activity calls, and cl
   assert.equal(spawned.length, 1);
   assert.equal(spawned[0].options.env.CODEX_DEFAULT_SKILL_IDS, '["review"]');
   const taskId = '00000000-0000-0000-0000-000000000001';
+  assert.deepEqual(await runtime.call('codex_status', { taskId }), { id: taskId, state: 'running' });
+  assert.deepEqual(await runtime.call('codex_output', { taskId }), { id: taskId, output: 'working', outputTruncated: false });
   await controller.cancelTask(taskId);
-  assert.deepEqual(activityCalls, [['codex_cancel', { taskId }]]);
+  assert.deepEqual(activityCalls, [
+    ['codex_status', { taskId }],
+    ['codex_output', { taskId }],
+    ['codex_cancel', { taskId }],
+  ]);
+  assert.deepEqual(tunnelCalls[0], ['run', {
+    target: 'http://127.0.0.1:48999/mcp',
+    connectorName: 'GPT Web Codex',
+    credentials,
+  }]);
 
   await controller.stop();
   assert.equal(runtime.status().state, 'stopped');
-  assert.deepEqual(tunnelCalls, ['stop', 'stop']);
+  assert.deepEqual(tunnelCalls, [
+    tunnelCalls[0],
+    ['stop', { alias: 'test-tunnel' }],
+  ]);
 });

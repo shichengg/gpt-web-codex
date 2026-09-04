@@ -2,10 +2,10 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { resolveProfileRoots } = require('./profiles.cjs');
+const { MAX_ENABLED_SKILLS, resolveProfileRoots } = require('./profiles.cjs');
 
 const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const MAX_SKILLS = 128;
+const MAX_CATALOG_SKILLS = 128;
 const MAX_NAME_LENGTH = 256;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const MAX_PREVIEW_BYTES = 4096;
@@ -17,7 +17,7 @@ async function scanSkills(profile) {
   const skills = [];
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (skills.length === MAX_SKILLS) break;
+    if (skills.length === MAX_CATALOG_SKILLS) break;
     if (!entry.isDirectory() || !SKILL_ID.test(entry.name)) continue;
     const directory = path.join(canonicalRoot, entry.name);
     try {
@@ -86,7 +86,7 @@ function samePath(left, right) {
 }
 
 function validateSkillIds(skillIds) {
-  if (!Array.isArray(skillIds) || skillIds.length > MAX_SKILLS ||
+  if (!Array.isArray(skillIds) || skillIds.length > MAX_ENABLED_SKILLS ||
       new Set(skillIds).size !== skillIds.length ||
       !skillIds.every((id) => typeof id === 'string' && SKILL_ID.test(id))) {
     throw new TypeError('Skill IDs must be a unique bounded list of valid IDs');

@@ -6,7 +6,9 @@ const { createJsonStateStore } = require('./state.cjs');
 
 const PROFILE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_PATH_LENGTH = 4096;
-const MAX_ENABLED_SKILLS = 128;
+// The core accepts at most 64 selected Skills. Keep profile persistence at
+// that same contract so a valid saved profile can always start a runtime.
+const MAX_ENABLED_SKILLS = 64;
 const PROFILE_FIELDS = new Set(['id', 'workspaceRoot', 'skillsRoot', 'enabledSkillIds']);
 
 function validateProfile(profile) {
@@ -169,4 +171,4 @@ function copyProfile(profile) {
   return { ...profile, enabledSkillIds: [...profile.enabledSkillIds] };
 }
 
-module.exports = { PROFILE_ID, createProfileStore, resolveProfileRoots, validateProfile };
+module.exports = { MAX_ENABLED_SKILLS, PROFILE_ID, createProfileStore, resolveProfileRoots, validateProfile };

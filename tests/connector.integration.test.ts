@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { request as httpRequest } from 'node:http';
@@ -94,13 +94,57 @@ describe('authenticated connector', () => {
     try {
       await server.call('codex_submit', { prompt: 'Inspect.' }, auth);
       await server.call('codex_submit', { prompt: 'Override.', skillIds: [] }, auth);
+      await server.call('codex_submit', { prompt: 'Choose other.', skillIds: ['other'] }, auth);
 
       expect(submitted).toEqual([
         { prompt: 'Inspect.', skillIds: ['review'] },
         { prompt: 'Override.', skillIds: [] },
+        { prompt: 'Choose other.', skillIds: ['other'] },
       ]);
     } finally {
       await server.close();
+    }
+  });
+
+  test('submits, polls, reads output, and cancels through fixed task routes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-task-lifecycle-'));
+    const skillsRoot = path.join(root, 'skills');
+    await mkdir(skillsRoot, { recursive: true });
+    const paths = await createPathPolicy(root);
+    const id = '00000000-0000-0000-0000-000000000001';
+    let task = { id, state: 'running', output: 'working', outputTruncated: false, createdAt: '', updatedAt: '' };
+    const codex = {
+      submit: async () => task,
+      cancel: async (taskId: string) => {
+        expect(taskId).toBe(id);
+        task = { ...task, state: 'cancelled' };
+        return task;
+      },
+    };
+    const dependencies: ConnectorDependencies = {
+      token: 'secret',
+      workspace: createWorkspaceTools(root, paths),
+      git: createGitTools(root, paths),
+      skills: await SkillCatalog.create(skillsRoot),
+      mcp: McpRegistry.fromJson({ servers: [] }),
+      mcpTransport: { call: async () => ({}) },
+      codex: codex as unknown as CodexRunner,
+      tasks: { get: async (taskId: string) => {
+        expect(taskId).toBe(id);
+        return task;
+      } } as unknown as TaskStore,
+    };
+    const server = await createServer(dependencies);
+    const auth = { token: 'secret' };
+    try {
+      expect(await server.call('codex_submit', { prompt: 'Inspect.', skillIds: [] }, auth)).toMatchObject({ id, state: 'running' });
+      expect(await server.call('codex_status', { taskId: id }, auth)).toMatchObject({ id, state: 'running' });
+      expect(await server.call('codex_output', { taskId: id }, auth)).toMatchObject({ id, state: 'running', output: 'working' });
+      expect(await server.call('codex_cancel', { taskId: id }, auth)).toMatchObject({ id, state: 'cancelled' });
+      expect(await server.call('codex_status', { taskId: id }, auth)).toMatchObject({ id, state: 'cancelled' });
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 
