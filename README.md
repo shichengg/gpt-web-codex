@@ -111,8 +111,8 @@ entrypoint canonically contained in `<workspace>/.codex/mcp`. It rejects
 `npx`, shells (`cmd`, PowerShell, and similar launchers), `node -e`, additional
 arguments, relative paths, links escaping that directory, remote URLs, and
 proxy-style arguments. Put an approved local server at a path such as
-`C:\workspace\.codex\mcp\repo-linter.cjs`; do not use the broader core JSON
-example above as a launcher entry without adapting it to this policy.
+`C:\workspace\.codex\mcp\repo-linter.cjs`. The core runtime repeats this
+trusted-workspace validation when it loads a mutable non-empty registry.
 
 ## Connector tools and task states
 

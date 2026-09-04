@@ -102,9 +102,10 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       const active = await profiles.getActive();
       if (!active || !runtimeSupervisor) throw new Error('Select a workspace profile before starting the local runtime');
       const registry = registryFor(active.id);
-      // The core requires a physical registry file; atomically materialize an
-      // empty validated registry for a newly selected profile before spawn.
-      await registry.save(await registry.load());
+      // A registry file can predate this process or be manually modified.
+      // Reapply canonical active-profile containment immediately before spawn,
+      // then persist the canonical form that the child will load.
+      await registry.save(await validateRegistryForProfile(await registry.load(), active));
       await runtimeSupervisor.start(active, registryPathFor(active.id));
       return runtimeSnapshot();
     },

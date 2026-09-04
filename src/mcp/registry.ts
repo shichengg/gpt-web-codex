@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 
 export interface RegisteredMcpServer {
@@ -26,6 +27,7 @@ const serverSchema = z.object({
 });
 
 const registrySchema = z.object({ servers: z.array(serverSchema) }).strict();
+const APPROVED_EXECUTABLES = new Set(['node', 'node.exe']);
 
 export class McpRegistry {
   private constructor(private readonly servers: Map<string, RegisteredMcpServer>) {}
@@ -71,7 +73,7 @@ export class McpRegistry {
   }
 }
 
-export async function loadMcpRegistry(filePath: string): Promise<McpRegistry> {
+export async function loadMcpRegistry(filePath: string, workspaceRoot?: string): Promise<McpRegistry> {
   let source: string;
   try {
     source = await readFile(filePath, 'utf8');
@@ -84,5 +86,58 @@ export async function loadMcpRegistry(filePath: string): Promise<McpRegistry> {
   } catch (error) {
     throw new Error(`Invalid MCP registry JSON: ${filePath}`, { cause: error });
   }
-  return McpRegistry.fromJson(value);
+  return bindRegistryToTrustedWorkspace(McpRegistry.fromJson(value), workspaceRoot);
+}
+
+/**
+ * Registry JSON is mutable configuration, so core loading repeats the
+ * launcher's executable and canonical profile-containment policy before a
+ * stdio transport can spawn anything. Empty registries need no MCP directory.
+ */
+async function bindRegistryToTrustedWorkspace(registry: McpRegistry, workspaceRoot?: string): Promise<McpRegistry> {
+  const servers = registry.list();
+  if (servers.length === 0) return registry;
+  if (!workspaceRoot) throw new Error('MCP registry with servers requires a trusted workspace root');
+
+  const approvedRoot = await canonicalDirectory(path.join(workspaceRoot, '.codex', 'mcp'), 'MCP entrypoint root');
+  const canonicalServers: RegisteredMcpServer[] = [];
+  for (const server of servers) {
+    if (!APPROVED_EXECUTABLES.has(server.command.toLowerCase())) {
+      throw new Error('MCP registry command is not an approved local executable');
+    }
+    if (server.args.length !== 1 || !path.isAbsolute(server.args[0]) || path.extname(server.args[0]).toLowerCase() !== '.cjs') {
+      throw new Error('MCP registry requires exactly one absolute local .cjs entrypoint');
+    }
+    const entrypoint = await canonicalFile(server.args[0], 'MCP entrypoint');
+    if (!isContained(approvedRoot, entrypoint)) {
+      throw new Error('MCP entrypoint must be contained in the workspace .codex/mcp directory');
+    }
+    canonicalServers.push({ ...server, args: [entrypoint] });
+  }
+  return McpRegistry.fromJson({ servers: canonicalServers });
+}
+
+async function canonicalDirectory(value: string, label: string): Promise<string> {
+  try {
+    const resolved = await realpath(value);
+    if (!(await stat(resolved)).isDirectory()) throw new Error('not a directory');
+    return resolved;
+  } catch {
+    throw new Error(`${label} must be an existing directory`);
+  }
+}
+
+async function canonicalFile(value: string, label: string): Promise<string> {
+  try {
+    const resolved = await realpath(value);
+    if (!(await stat(resolved)).isFile()) throw new Error('not a file');
+    return resolved;
+  } catch {
+    throw new Error(`${label} must be an existing local file`);
+  }
+}
+
+function isContained(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }

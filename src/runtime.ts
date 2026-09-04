@@ -49,7 +49,7 @@ async function createDependencies(config: BridgeConfig): Promise<ConnectorDepend
     workspace: createWorkspaceTools(config.workspaceRoot, paths),
     git: createGitTools(config.workspaceRoot, paths),
     skills,
-    mcp: await loadMcpRegistry(config.mcpRegistryPath),
+    mcp: await loadMcpRegistry(config.mcpRegistryPath, config.workspaceRoot),
     mcpTransport: new StdioMcpTransport(),
     codex: new CodexRunner({ workspaceRoot: config.workspaceRoot, catalog: skills, store: tasks }),
     tasks,

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -67,11 +67,30 @@ describe('McpRegistry', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-mcp-'));
     temporaryRoots.push(root);
     const registryPath = path.join(root, 'mcp-registry.json');
+    const workspaceRoot = path.join(root, 'workspace');
+    const entrypoint = path.join(workspaceRoot, '.codex', 'mcp', 'lint.cjs');
+    await mkdir(path.dirname(entrypoint), { recursive: true });
+    await writeFile(entrypoint, 'process.stdin.resume();');
     await writeFile(registryPath, JSON.stringify({
-      servers: [{ id: 'lint', command: 'node', args: ['lint.mjs'], allowedTools: ['check'] }],
+      servers: [{ id: 'lint', command: 'node', args: [entrypoint], allowedTools: ['check'] }],
     }));
 
-    const registry = await loadMcpRegistry(registryPath);
-    expect(registry.get('lint')).toMatchObject({ id: 'lint', command: 'node', args: ['lint.mjs'], timeoutMs: 30000 });
+    const registry = await loadMcpRegistry(registryPath, workspaceRoot);
+    expect(registry.get('lint')).toMatchObject({ id: 'lint', command: 'node', args: [entrypoint], timeoutMs: 30000 });
+  });
+
+  test('rejects mutable registry files with an external entrypoint before a stdio process can run', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-mcp-external-'));
+    temporaryRoots.push(root);
+    const workspaceRoot = path.join(root, 'workspace');
+    const outsideEntrypoint = path.join(root, 'outside.cjs');
+    const registryPath = path.join(root, 'mcp-registry.json');
+    await mkdir(path.join(workspaceRoot, '.codex', 'mcp'), { recursive: true });
+    await writeFile(outsideEntrypoint, 'process.stdin.resume();');
+    await writeFile(registryPath, JSON.stringify({
+      servers: [{ id: 'outside', command: 'node', args: [outsideEntrypoint], allowedTools: ['check'] }],
+    }));
+
+    await expect(loadMcpRegistry(registryPath, workspaceRoot)).rejects.toThrow('contained');
   });
 });

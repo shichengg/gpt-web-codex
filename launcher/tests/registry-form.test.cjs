@@ -135,3 +135,38 @@ test('controller uses its RuntimeClient and owned supervisor for start, cancel, 
   assert.equal(calls.some((call) => call[0] === 'start'), true);
   assert.deepEqual(calls.find((call) => call[1] === 'codex_cancel'), ['call', 'codex_cancel', { taskId: 'task-1' }]);
 });
+
+test('revalidates a pre-existing registry against the active profile before runtime spawn', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-registry-start-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  const skillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  const mcpRoot = path.join(workspaceRoot, '.codex', 'mcp');
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-outside-entrypoint-'));
+  t.after(() => fs.rm(outsideRoot, { recursive: true, force: true }));
+  await fs.mkdir(skillsRoot, { recursive: true });
+  await fs.mkdir(mcpRoot, { recursive: true });
+  const outsideEntrypoint = path.join(outsideRoot, 'outside.cjs');
+  await fs.writeFile(outsideEntrypoint, 'process.stdin.resume();');
+  await fs.mkdir(path.join(root, 'mcp-registries'), { recursive: true });
+  await fs.writeFile(path.join(root, 'mcp-registries', 'one.json'), JSON.stringify({
+    servers: [{ ...validDraft.servers[0], args: [outsideEntrypoint] }],
+  }));
+  let spawned = 0;
+  let restarted = 0;
+  const supervisor = {
+    async start() { spawned += 1; },
+    async restart() { restarted += 1; },
+    async stop() {},
+    async call() { return { state: 'stopped' }; },
+    subscribeLogs() { return () => {}; },
+  };
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' }, runtimeSupervisor: supervisor });
+  await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot, enabledSkillIds: [] });
+  await controller.setActiveProfile('one');
+
+  await assert.rejects(() => controller.start(), /contained/i);
+
+  assert.equal(spawned, 0);
+  assert.equal(restarted, 0);
+});
