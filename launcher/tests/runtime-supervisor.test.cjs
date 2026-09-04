@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createRuntimeSupervisor } = require('../electron/runtime-supervisor.cjs');
+const { stopRuntimeBeforeQuit } = require('../electron/main.cjs');
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -140,6 +141,26 @@ test('never emits token fragments split across chunks and ignores stream data af
   assert.equal(logs.join('\n').includes('private-token-123456'), false);
 });
 
+test('drops a trailing partial token when an output stream closes', async () => {
+  const child = fakeChild();
+  const token = 'private-token-123456';
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => token,
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+  const logs = [];
+  supervisor.subscribeLogs((entry) => logs.push(entry));
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  child.stderr.emit('data', Buffer.from(token.slice(0, -1)));
+  child.emit('exit', 0);
+
+  assert.equal(logs.some((entry) => entry.includes(token.slice(0, -1))), false);
+});
+
 test('owns Windows descendants with a fixed taskkill process-tree command', async () => {
   const child = delayedChild();
   child.pid = 4242;
@@ -223,6 +244,35 @@ test('rejects oversized readiness output without retaining an unbounded buffer',
     /readiness output exceeded/i,
   );
   assert.equal(supervisor.status().state, 'error');
+});
+
+test('retains a failed startup child so stop failure blocks launcher quit', async () => {
+  const child = delayedChild();
+  child.pid = 4242;
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    platform: 'win32', maxReadyBytes: 64, stopGraceMs: 10, forceStopTimeoutMs: 10,
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('x'.repeat(65))));
+      return child;
+    },
+    spawnTaskkill() {
+      const taskkill = new EventEmitter();
+      queueMicrotask(() => taskkill.emit('exit', 1));
+      return taskkill;
+    },
+  });
+
+  await assert.rejects(
+    () => supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json'),
+    /readiness output exceeded/i,
+  );
+  assert.deepEqual(supervisor.status().workspace, 'C:\\workspace');
+  await assert.rejects(() => supervisor.stop(), /process-tree termination failed/i);
+
+  let quitCalls = 0;
+  assert.equal(await stopRuntimeBeforeQuit(supervisor, () => { quitCalls += 1; }), false);
+  assert.equal(quitCalls, 0);
 });
 
 test('reports stopped only after the child exits and escalates a delayed stop', async () => {

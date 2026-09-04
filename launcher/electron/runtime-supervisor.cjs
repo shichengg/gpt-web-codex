@@ -112,6 +112,19 @@ function createRuntimeSupervisor(options) {
         await terminate(nextChild, stopGraceMs, forceStopTimeoutMs, appendLog, forceTerminate);
       } catch (stopError) {
         recordFailure(stopError instanceof Error ? stopError.message : 'Runtime startup cleanup failed', token);
+        // The child may still be live after a failed forced shutdown. Retain
+        // its token, profile, and output ownership so a later stop can retry
+        // termination and Electron cannot quit while it is orphaned.
+        if (hasExited(nextChild)) {
+          disposeRuntimeStreams(nextChild);
+          if (child === nextChild) child = undefined;
+          active = undefined;
+          currentToken = undefined;
+        } else {
+          attachRuntimeListeners(nextChild, token);
+        }
+        state = 'error';
+        throw error;
       }
       disposeRuntimeStreams(nextChild);
       if (child === nextChild) child = undefined;
@@ -337,7 +350,10 @@ function createChildOutput(token, appendLog) {
   function close() {
     if (closed) return;
     closed = true;
-    if (pending) appendLog(pending, secret);
+    // `pending` is always a suffix that could become a token on the next
+    // chunk. At EOF there is no next chunk to disambiguate it, so never emit
+    // this raw prefix to logs or IPC subscribers.
+    if (pending) appendLog('[REDACTED]', secret);
     pending = '';
   }
 
