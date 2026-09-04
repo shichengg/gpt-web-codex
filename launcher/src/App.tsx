@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { DiagnosticReport, LauncherSnapshot, McpRegistryDraft, McpServerDraft, SkillSummary, WorkspaceProfile } from './types';
+import type { DiagnosticReport, LauncherSnapshot, McpRegistryDraft, McpServerDraft, SkillSummary, TaskActivity, WorkspaceProfile } from './types';
 
 const views = ['Status', 'Workspace', 'Skills', 'MCP', 'Tasks & Logs', 'Settings & Diagnostics'] as const;
 type View = (typeof views)[number];
@@ -289,6 +289,7 @@ function Mcp() {
 
 function TasksAndLogs() {
   const [taskId, setTaskId] = useState('');
+  const [task, setTask] = useState<TaskActivity>();
   const [message, setMessage] = useState<string>();
   const [logs, setLogs] = useState<string[]>([]);
 
@@ -297,10 +298,37 @@ function TasksAndLogs() {
     setLogs((current) => [safe, ...current].slice(0, 64));
   }), []);
 
+  useEffect(() => {
+    const selectedTaskId = taskId.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(selectedTaskId)) {
+      setTask(undefined);
+      return undefined;
+    }
+    let active = true;
+    const refresh = async () => {
+      try {
+        const next = await window.gptWebCodex.task(taskId.trim());
+        if (active) {
+          setTask(next);
+          setMessage(undefined);
+        }
+      } catch {
+        if (active) setMessage('Unable to read this task. Confirm that the local runtime is running and the task ID is valid.');
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [taskId]);
+
   async function cancel() {
     try {
       await window.gptWebCodex.cancelTask(taskId.trim());
       setMessage('Cancellation requested for the task.');
+      setTask(await window.gptWebCodex.task(taskId.trim()));
     } catch {
       setMessage('Unable to cancel this task. Enter its bounded task ID.');
     }
@@ -308,10 +336,17 @@ function TasksAndLogs() {
 
   return <section className="panel stack">
     <h2>Tasks and logs</h2>
-    <p>Only recent redacted runtime activity is shown here. Chat content and credentials are not retained.</p>
+    <p>Only bounded, redacted local task activity and recent runtime logs are shown here. Chat content and credentials are not retained.</p>
     <label>Task ID<input onChange={(event) => setTaskId(event.target.value)} value={taskId} /></label>
     <div className="actions"><button disabled={!taskId.trim()} onClick={() => void cancel()} type="button">Cancel task</button></div>
     {message && <p>{message}</p>}
+    {task && <article className="skill">
+      <h3>Selected task</h3>
+      <p><code>{task.id}</code> · {task.state}</p>
+      {task.error && <p className="error">{rendererSafeText(task.error)}</p>}
+      {task.output && <pre>{rendererSafeText(task.output)}</pre>}
+      {task.outputTruncated && <p>Task output was truncated by the local runtime limit.</p>}
+    </article>}
     <h3>Recent runtime logs</h3>
     {logs.length === 0 ? <p>No recent runtime activity.</p> : <ul className="plain-list">{logs.map((entry, index) => <li key={`${index}-${entry}`}><pre>{entry}</pre></li>)}</ul>}
   </section>;
@@ -324,7 +359,7 @@ function parseLines(value: string): string[] {
 function rendererSafeText(value: unknown): string {
   const text = typeof value === 'string' ? value : 'Invalid runtime activity entry';
   const redacted = text
-    .replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/\b(token|api_key|password|access_token|client_secret)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
     .replace(/\bauthorization\s*:\s*bearer\s+[^\s,;]+/gi, 'Authorization: Bearer [REDACTED]');
   return redacted.length <= 4096 ? redacted : `${redacted.slice(0, 4095)}…`;
 }

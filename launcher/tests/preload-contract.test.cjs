@@ -30,6 +30,7 @@ test('preload exposes only declared launcher methods', () => {
     'openSkillFolder',
     'saveMcpRegistry',
     'setupTunnel',
+    'task',
     'cancelTask',
     'doctor',
     'openLogs',
@@ -75,6 +76,19 @@ test('preload forwards tunnel setup only through its dedicated IPC channel', asy
   assert.deepEqual(result, { tunnelConfigured: true });
 });
 
+test('preload forwards task queries only through the fixed task IPC channel', async () => {
+  const calls = [];
+  const api = createPreloadApi({
+    invoke: (...args) => { calls.push(args); return Promise.resolve({ id: 'task-1', state: 'running' }); },
+    on() {},
+    removeListener() {},
+  });
+
+  await api.task('task-1');
+
+  assert.deepEqual(calls, [['launcher:task', 'task-1']]);
+});
+
 test('sandboxed preload exposes the bridge while require.main is unavailable', () => {
   const calls = [];
   const fakeIpc = createFakeIpc();
@@ -102,6 +116,6 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
   assert.deepEqual(Object.keys(calls[0][1]), [
     'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
     'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
-    'setupTunnel', 'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
+    'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
   ]);
 });

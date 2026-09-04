@@ -89,6 +89,10 @@ async function validateRegistryForProfile(draft, profile) {
   if (!profile || typeof profile.workspaceRoot !== 'string') {
     throw new TypeError('A canonical workspace profile is required for MCP registry validation');
   }
+  // An empty local registry needs no executable root. This keeps a newly
+  // selected workspace startable until its operator explicitly adds a local
+  // MCP server, while every non-empty entry retains canonical containment.
+  if (registry.servers.length === 0) return registry;
   const approvedRoot = await canonicalDirectory(path.join(profile.workspaceRoot, '.codex', 'mcp'), 'MCP entrypoint root');
   const servers = [];
   for (const server of registry.servers) {

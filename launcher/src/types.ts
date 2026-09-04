@@ -48,6 +48,15 @@ export interface TunnelSetup {
   runtimeKey: string;
 }
 
+/** Bounded, redacted activity returned by the fixed task query bridge. */
+export interface TaskActivity {
+  id: string;
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
+  error?: string;
+  output?: string;
+  outputTruncated?: boolean;
+}
+
 export interface GptWebCodexApi {
   snapshot(): Promise<LauncherSnapshot>;
   start(): Promise<LauncherSnapshot>;
@@ -61,6 +70,7 @@ export interface GptWebCodexApi {
   openSkillFolder(skillId: string): Promise<void>;
   saveMcpRegistry(draft: McpRegistryDraft): Promise<LauncherSnapshot>;
   setupTunnel(setup: TunnelSetup): Promise<LauncherSnapshot>;
+  task(taskId: string): Promise<TaskActivity>;
   cancelTask(taskId: string): Promise<LauncherSnapshot>;
   doctor(): Promise<DiagnosticReport>;
   openLogs(): Promise<void>;

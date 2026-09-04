@@ -156,6 +156,7 @@ test('IPC validates bounded Skill, registry, and task payloads before controller
   const controller = {
     saveSkills: () => { throw new Error('controller should not receive invalid Skills'); },
     saveMcpRegistry: () => { throw new Error('controller should not receive invalid registry'); },
+    task: async (taskId) => ({ id: taskId, state: 'running' }),
     cancelTask: () => { throw new Error('controller should not receive invalid task'); },
   };
 
@@ -170,6 +171,21 @@ test('IPC validates bounded Skill, registry, and task payloads before controller
     servers: [{ id: 'local', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['*'], timeoutMs: 5000 }],
   }), /allowedTools/);
   assert.throws(() => handlers.get('launcher:cancel-task')({ sender }, 'task\nnext'), /task ID/);
+  assert.throws(() => handlers.get('launcher:task')({ sender }, 'task\nnext'), /task ID/);
+});
+
+test('IPC routes task queries to the dedicated controller operation', async () => {
+  const handlers = new Map();
+  const sender = { getURL: () => rendererEntryUrl };
+  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler) };
+  const calls = [];
+  registerIpcHandlers(ipcMain, { task: async (taskId) => {
+    calls.push(taskId);
+    return { id: taskId, state: 'running' };
+  } }, () => sender);
+
+  assert.deepEqual(await handlers.get('launcher:task')({ sender }, 'task-1'), { id: 'task-1', state: 'running' });
+  assert.deepEqual(calls, ['task-1']);
 });
 
 test('setup IPC passes credentials only to the main-process setup operation', async () => {

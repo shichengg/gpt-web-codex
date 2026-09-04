@@ -61,6 +61,7 @@ function createDefaultController() {
     openSkillFolder: async () => undefined,
     saveMcpRegistry: async () => snapshot,
     setupTunnel: async () => snapshot,
+    task: async () => { throw new Error('Local runtime activity is unavailable'); },
     cancelTask: async () => snapshot,
     doctor: () => runDoctor(),
     openLogs: async () => undefined,
@@ -312,6 +313,10 @@ async function createProfileController({
         throw error;
       }
     }),
+    task: async (taskId) => {
+      if (!client) throw new Error('Local runtime activity is unavailable');
+      return client.task(taskId);
+    },
     cancelTask: async (taskId) => {
       if (!client) throw new Error('Local runtime activity is unavailable');
       await client.cancel(taskId);
@@ -470,6 +475,10 @@ function registerIpcHandlers(ipcMain, controller = createDefaultController(), ge
     'launcher:setup-tunnel': guarded((args) => {
       if (args.length !== 1) throw new TypeError('setupTunnel requires one payload');
       return controller.setupTunnel(validateTunnelSetupDraft(args[0]));
+    }),
+    'launcher:task': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('task requires one payload');
+      return controller.task(validateTaskId(args[0]));
     }),
     'launcher:cancel-task': guarded((args) => {
       if (args.length !== 1) throw new TypeError('cancelTask requires one payload');

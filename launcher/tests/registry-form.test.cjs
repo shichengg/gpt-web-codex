@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createRegistryStore, validateRegistryDraft } = require('../electron/registry.cjs');
+const { createRegistryStore, validateRegistryForProfile, validateRegistryDraft } = require('../electron/registry.cjs');
 const { createProfileController } = require('../electron/main.cjs');
 
 const validDraft = Object.freeze({
@@ -45,6 +45,16 @@ test('accepts only the approved node executable with one local CJS entrypoint', 
   ]) {
     assert.throws(() => validateRegistryDraft({ servers: [server] }), /approved|entrypoint|argument/i);
   }
+});
+
+test('permits an empty registry when the optional workspace MCP directory is absent', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-empty-registry-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  await fs.mkdir(workspaceRoot, { recursive: true });
+
+  await assert.doesNotReject(() => validateRegistryForProfile({ servers: [] }, { workspaceRoot }));
+  await assert.rejects(() => fs.access(path.join(workspaceRoot, '.codex', 'mcp')));
 });
 
 test('atomically saves an exact validated registry without retaining rejected drafts', async (t) => {
@@ -128,11 +138,16 @@ test('controller uses its RuntimeClient and owned supervisor for start, cancel, 
   const draft = { servers: [{ ...validDraft.servers[0], args: [entrypoint] }] };
   await controller.saveMcpRegistry(draft);
   await controller.start();
+  await controller.task('task-1');
   await controller.cancelTask('task-1');
 
   assert.equal(calls[0][0], 'stop');
   assert.equal(calls.some((call) => call[0] === 'restart'), true);
   assert.equal(calls.some((call) => call[0] === 'start'), true);
+  assert.deepEqual(calls.filter((call) => call[1] === 'codex_status' || call[1] === 'codex_output'), [
+    ['call', 'codex_status', { taskId: 'task-1' }],
+    ['call', 'codex_output', { taskId: 'task-1' }],
+  ]);
   assert.deepEqual(calls.find((call) => call[1] === 'codex_cancel'), ['call', 'codex_cancel', { taskId: 'task-1' }]);
 });
 

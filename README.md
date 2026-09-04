@@ -70,8 +70,11 @@ Skills are read-only packages directly beneath `CODEX_SKILLS_ROOT`:
 Each `SKILL.md` starts with simple frontmatter containing `name` and
 `description`, followed by the instructions. ChatGPT can list available
 skills, read a selected skill, and submit a Codex task with explicit `skillIds`.
-Skills are never selected implicitly by a request. Keep skill packages
-trusted: their content is included in the Codex prompt.
+For the direct connector, Skills are never selected implicitly by a request.
+When the desktop launcher has saved validated workspace defaults, an omitted
+`skillIds` field uses those defaults; any explicit `skillIds` array, including
+`[]`, overrides them for that task. Keep skill packages trusted: their content
+is included in the Codex prompt.
 
 ## MCP registry
 
