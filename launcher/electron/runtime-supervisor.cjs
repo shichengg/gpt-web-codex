@@ -22,12 +22,16 @@ function createRuntimeSupervisor(options) {
   const request = options.request ?? requestRuntimeTool;
   const tokenFactory = options.tokenFactory ?? randomUUID;
   const readyTimeoutMs = positiveInteger(options.readyTimeoutMs, 15_000, 1_000, 60_000, 'readyTimeoutMs');
+  const stopGraceMs = positiveInteger(options.stopGraceMs, 5_000, 10, 30_000, 'stopGraceMs');
+  const forceStopTimeoutMs = positiveInteger(options.forceStopTimeoutMs, 5_000, 10, 30_000, 'forceStopTimeoutMs');
   const maxLogBytes = positiveInteger(options.maxLogBytes, 4_096, 128, 16_384, 'maxLogBytes');
   const maxLogs = positiveInteger(options.maxLogs, 64, 1, 128, 'maxLogs');
   let child;
   let active;
+  let currentToken;
   let state = 'stopped';
   let stopping;
+  let startQueue = Promise.resolve();
   const logs = [];
   const logListeners = new Set();
 
@@ -36,13 +40,25 @@ function createRuntimeSupervisor(options) {
   }
 
   function appendLog(entry) {
-    const safe = redactAndBound(typeof entry === 'string' ? entry : 'Invalid runtime activity entry', maxLogBytes);
+    const source = typeof entry === 'string' ? entry : 'Invalid runtime activity entry';
+    const safe = redactAndBound(redactRuntimeToken(source, currentToken), maxLogBytes);
     logs.unshift(safe);
     if (logs.length > maxLogs) logs.length = maxLogs;
     for (const listener of logListeners) listener(safe);
   }
 
-  async function start(profile, mcpRegistryPath) {
+  function start(profile, mcpRegistryPath) {
+    // Serialize starts, so two renderer requests cannot briefly own two
+    // runtime processes. stop remains immediate so it can cancel a startup.
+    const next = startQueue.then(
+      () => startRuntime(profile, mcpRegistryPath),
+      () => startRuntime(profile, mcpRegistryPath),
+    );
+    startQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  async function startRuntime(profile, mcpRegistryPath) {
     validateStart(profile, mcpRegistryPath);
     if (state === 'running' && active?.profile.id === profile.id) return status();
     if (state !== 'stopped') await stop();
@@ -50,13 +66,13 @@ function createRuntimeSupervisor(options) {
     state = 'starting';
     const token = tokenFactory();
     if (typeof token !== 'string' || token.length < 16) throw new Error('Runtime token factory returned an invalid token');
+    currentToken = token;
     const stateDir = path.join(options.appDataPath, 'runtime-state', profile.id);
     const nextChild = spawn(process.execPath, [options.runtimeEntry], {
       cwd: path.dirname(options.runtimeEntry),
       shell: false,
       windowsHide: true,
       env: {
-        ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
         CODEX_HOST: '127.0.0.1',
         CODEX_PORT: '0',
@@ -81,6 +97,7 @@ function createRuntimeSupervisor(options) {
         if (child !== nextChild) return;
         child = undefined;
         active = undefined;
+        currentToken = undefined;
         state = 'stopped';
         if (code !== 0 && code !== null) appendLog(`Runtime process exited with code ${code}`);
       });
@@ -88,9 +105,10 @@ function createRuntimeSupervisor(options) {
     } catch (error) {
       state = 'error';
       appendLog(error instanceof Error ? error.message : 'Runtime startup failed');
-      await terminate(nextChild);
+      await terminate(nextChild, stopGraceMs, forceStopTimeoutMs, appendLog);
       if (child === nextChild) child = undefined;
       active = undefined;
+      currentToken = undefined;
       state = 'stopped';
       throw error;
     }
@@ -106,9 +124,10 @@ function createRuntimeSupervisor(options) {
       }
       state = 'stopping';
       const owned = child;
-      await terminate(owned);
+      await terminate(owned, stopGraceMs, forceStopTimeoutMs, appendLog);
       if (child === owned) child = undefined;
       active = undefined;
+      currentToken = undefined;
       state = 'stopped';
       return status();
     })();
@@ -119,10 +138,19 @@ function createRuntimeSupervisor(options) {
     }
   }
 
-  async function restart(profile, mcpRegistryPath) {
+  function restart(profile, mcpRegistryPath) {
+    const next = startQueue.then(
+      () => restartRuntime(profile, mcpRegistryPath),
+      () => restartRuntime(profile, mcpRegistryPath),
+    );
+    startQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  async function restartRuntime(profile, mcpRegistryPath) {
     if (state !== 'running') return status();
     await stop();
-    return start(profile, mcpRegistryPath);
+    return startRuntime(profile, mcpRegistryPath);
   }
 
   async function call(tool, input) {
@@ -202,12 +230,64 @@ function parseReady(line) {
   }
 }
 
-async function terminate(child) {
-  if (child.exitCode !== null && child.exitCode !== undefined) return;
-  await new Promise((resolve) => {
-    child.once('exit', resolve);
-    child.kill();
+async function terminate(child, graceMs, forceStopTimeoutMs, appendLog) {
+  if (hasExited(child)) return;
+  const exit = observeExit(child);
+  try {
+    sendSignal(child, 'SIGTERM');
+    if (await exit.wait(graceMs)) return;
+
+    appendLog('Runtime process did not exit after cancellation; forcing termination');
+    sendSignal(child, 'SIGKILL');
+    if (await exit.wait(forceStopTimeoutMs)) return;
+    throw new Error('Runtime process did not exit after forced termination');
+  } finally {
+    exit.dispose();
+  }
+}
+
+function hasExited(child) {
+  return (child.exitCode !== null && child.exitCode !== undefined) ||
+    (child.signalCode !== null && child.signalCode !== undefined);
+}
+
+function sendSignal(child, signal) {
+  try {
+    child.kill(signal);
+  } catch (error) {
+    if (!hasExited(child)) throw error;
+  }
+}
+
+function observeExit(child) {
+  let exited = hasExited(child);
+  let resolveWait;
+  const onExit = () => {
+    exited = true;
+    if (resolveWait) resolveWait(true);
+  };
+  child.once('exit', onExit);
+  return Object.freeze({
+    wait: (timeoutMs) => exited
+      ? Promise.resolve(true)
+      : new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          resolveWait = undefined;
+          resolve(exited);
+        }, timeoutMs);
+        resolveWait = (value) => {
+          clearTimeout(timer);
+          resolveWait = undefined;
+          resolve(value);
+        };
+      }),
+    dispose: () => child.removeListener('exit', onExit),
   });
+}
+
+function redactRuntimeToken(value, token) {
+  if (!token) return value;
+  return value.split(token).join('[REDACTED]');
 }
 
 async function requestRuntimeTool(url, token, tool, input) {
