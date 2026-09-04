@@ -60,4 +60,19 @@ describe('SkillCatalog', () => {
     await expect(SkillCatalog.create(skillsRoot)).resolves.toBeDefined();
     await expect((await SkillCatalog.create(skillsRoot)).list()).resolves.toEqual([]);
   });
+
+  test.skipIf(process.platform === 'win32')('does not read a SKILL.md file symlinked outside the root', async () => {
+    const skillsRoot = await makeSkillsRoot();
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skill-file-outside-'));
+    temporaryRoots.push(outside);
+    await mkdir(path.join(skillsRoot, 'linked-file'));
+    const outsideFile = path.join(outside, 'SKILL.md');
+    await writeFile(outsideFile, '---\nname: leaked\ndescription: Leaked.\n---\nsecret');
+    await symlink(outsideFile, path.join(skillsRoot, 'linked-file', 'SKILL.md'), 'file');
+
+    const catalog = await SkillCatalog.create(skillsRoot);
+
+    await expect(catalog.list()).resolves.toEqual([]);
+    await expect(catalog.read('linked-file')).rejects.toThrow('Unknown skill');
+  });
 });

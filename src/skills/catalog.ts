@@ -1,4 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createPathPolicy, type PathPolicy } from '../security/paths.js';
 
@@ -63,7 +64,7 @@ export class SkillCatalog {
 
   private async readPackage(id: string): Promise<ParsedSkill> {
     const skillPath = await this.paths.resolve(path.join(id, 'SKILL.md'));
-    const source = await readFile(skillPath, 'utf8');
+    const source = await readSkillFile(skillPath);
     const metadata = parseFrontmatter(source);
     return {
       id,
@@ -71,6 +72,26 @@ export class SkillCatalog {
       description: metadata.description,
       content: metadata.content,
     };
+  }
+}
+
+/**
+ * Open the already policy-checked file as a handle before reading it. On
+ * platforms that support it, O_NOFOLLOW closes the final symlink race; the
+ * lstat check also rejects static symlink packages on Windows.
+ */
+async function readSkillFile(skillPath: string): Promise<string> {
+  const fileInfo = await lstat(skillPath);
+  if (!fileInfo.isFile()) {
+    throw new Error('SKILL.md must be a regular file');
+  }
+
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const handle = await open(skillPath, constants.O_RDONLY | noFollow);
+  try {
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
   }
 }
 
