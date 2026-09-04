@@ -95,4 +95,63 @@ describe('CodexRunner', () => {
 
     await runner.submit({ prompt: 'run', skillIds: ['large'] });
   });
+
+  test('rejects oversized prompt and Skill selections before persistence or spawn', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const store = new TaskStore(stateDir);
+    let spawned = false;
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store,
+      maxPromptBytes: 4,
+      maxSkillIds: 1,
+      spawn: () => { spawned = true; return fakeChild(); },
+    });
+
+    await expect(runner.submit({ prompt: '12345', skillIds: [] })).rejects.toThrow('prompt exceeds');
+    await expect(runner.submit({ prompt: 'ok', skillIds: ['a', 'b'] })).rejects.toThrow('skillIds exceeds');
+    expect(spawned).toBe(false);
+  });
+
+  test('persists a failed task when process spawning throws synchronously', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const store = new TaskStore(stateDir);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store,
+      spawn: () => { throw new Error('codex unavailable'); },
+    });
+
+    await expect(runner.submit({ prompt: 'run', skillIds: [] })).rejects.toThrow('codex unavailable');
+    const files = await import('node:fs/promises').then(({ readdir }) => readdir(stateDir));
+    expect(files).toHaveLength(1);
+    const task = await store.get(files[0].replace('.json', ''));
+    expect(task).toMatchObject({ state: 'failed', error: 'codex unavailable' });
+  });
+
+  test('rejects non-finite or out-of-range execution limits', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const base = {
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store: new TaskStore(stateDir),
+      spawn: () => fakeChild(),
+    };
+
+    expect(() => new CodexRunner({ ...base, timeoutMs: Number.NaN })).toThrow('timeoutMs');
+    expect(() => new CodexRunner({ ...base, maxSkillContextBytes: 0 })).toThrow('maxSkillContextBytes');
+    expect(() => new CodexRunner({ ...base, maxPromptBytes: Infinity })).toThrow('maxPromptBytes');
+    expect(() => new CodexRunner({ ...base, maxSkillIds: 257 })).toThrow('maxSkillIds');
+  });
 });

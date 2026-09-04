@@ -61,7 +61,7 @@ export class TaskStore {
 
   async appendOutput(id: string, output: string): Promise<RunningTask> {
     const task = await this.get(id);
-    task.output = truncate(Buffer.from(redact(output), 'utf8'), this.maxOutputBytes);
+    task.output = truncate(Buffer.concat([Buffer.from(task.output, 'utf8'), Buffer.from(redact(output), 'utf8')]), this.maxOutputBytes);
     task.updatedAt = new Date().toISOString();
     await this.persist(task);
     return task;
@@ -96,5 +96,19 @@ function redact(value: string): string {
 
 function truncate(value: Buffer, maxBytes: number): string {
   if (value.length <= maxBytes) return value.toString('utf8');
-  return `${value.subarray(0, maxBytes).toString('utf8')}…`;
+  const marker = Buffer.from('…', 'utf8');
+  if (maxBytes < marker.length) return decodeValidUtf8(value, maxBytes);
+  return `${decodeValidUtf8(value, maxBytes - marker.length)}…`;
+}
+
+function decodeValidUtf8(value: Buffer, maxBytes: number): string {
+  for (let length = Math.min(maxBytes, value.length); length >= 0; length -= 1) {
+    try {
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      return decoder.decode(value.subarray(0, length));
+    } catch {
+      // Back up over a partial multi-byte sequence.
+    }
+  }
+  return '';
 }

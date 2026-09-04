@@ -29,6 +29,8 @@ export interface CodexRunnerOptions {
   spawn?: SpawnFunction;
   timeoutMs?: number;
   maxSkillContextBytes?: number;
+  maxPromptBytes?: number;
+  maxSkillIds?: number;
 }
 
 /** Executes only the fixed Codex CLI contract for the configured workspace. */
@@ -39,19 +41,35 @@ export class CodexRunner {
   constructor(private readonly options: CodexRunnerOptions) {
     this.spawn = options.spawn ?? nodeSpawn;
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    validateBound('timeoutMs', this.timeoutMs, 1, 120_000);
+    validateBound('maxSkillContextBytes', options.maxSkillContextBytes ?? 64 * 1024, 1, 1024 * 1024);
+    validateBound('maxPromptBytes', options.maxPromptBytes ?? 256 * 1024, 1, 1024 * 1024);
+    validateBound('maxSkillIds', options.maxSkillIds ?? 64, 1, 256);
   }
 
   async submit(request: CodexRequest): Promise<RunningTask> {
     if (!request.prompt.trim()) throw new Error('Codex prompt must not be empty');
+    if (Buffer.byteLength(request.prompt, 'utf8') > (this.options.maxPromptBytes ?? 256 * 1024)) {
+      throw new Error('Codex prompt exceeds the configured byte limit');
+    }
+    if (request.skillIds.length > (this.options.maxSkillIds ?? 64)) {
+      throw new Error('Codex skillIds exceeds the configured count limit');
+    }
     const skillContent = await this.loadSkills(request.skillIds);
     const task = await this.options.store.create(request);
     const prompt = assemblePrompt(request.prompt, skillContent, this.options.maxSkillContextBytes ?? 64 * 1024);
     await this.options.store.complete(task.id, 'running');
 
-    const child = this.spawn('codex', ['exec', '--json', prompt], {
-      cwd: this.options.workspaceRoot,
-      shell: false,
-    });
+    let child: SpawnedChild;
+    try {
+      child = this.spawn('codex', ['exec', '--json', prompt], {
+        cwd: this.options.workspaceRoot,
+        shell: false,
+      });
+    } catch (error) {
+      await this.options.store.complete(task.id, 'failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
     let outputWrites = Promise.resolve();
@@ -103,4 +121,10 @@ function assemblePrompt(prompt: string, skills: string[], maxSkillContextBytes: 
     ? context
     : `${Buffer.from(context, 'utf8').subarray(0, Math.max(0, maxSkillContextBytes - 15)).toString('utf8')}\n[TRUNCATED]`;
   return `${prompt}\n\n[SELECTED SKILLS]\n${bounded}`;
+}
+
+function validateBound(name: string, value: number, minimum: number, maximum: number): void {
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be finite and between ${minimum} and ${maximum}`);
+  }
 }
