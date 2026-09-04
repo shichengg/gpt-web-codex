@@ -3,11 +3,25 @@ const test = require('node:test');
 
 const {
   createMainWindow,
+  createActivityPublisher,
   isAllowedExternalUrl,
   registerIpcHandlers,
   rendererEntryUrl,
   windowOptions,
 } = require('../electron/main.cjs');
+
+test('redacts and byte-bounds activity in the main process before renderer IPC', () => {
+  const sent = [];
+  const publish = createActivityPublisher(() => ({ send: (channel, entry) => sent.push([channel, entry]) }), 128);
+
+  publish(`{"access_token":"private","client_secret":"hidden"} ${'界'.repeat(8_000)}`);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0], 'launcher:log');
+  assert.equal(Buffer.byteLength(sent[0][1], 'utf8') <= 128, true);
+  assert.match(sent[0][1], /\[REDACTED\]/);
+  assert.equal(sent[0][1].includes('private') || sent[0][1].includes('hidden'), false);
+});
 
 test('window has isolated renderer preferences', () => {
   assert.deepEqual(windowOptions.webPreferences, {
@@ -53,7 +67,7 @@ test('IPC validates bounded Skill, registry, and task payloads before controller
 
   assert.throws(() => handlers.get('launcher:save-skills')({ sender }, ['valid', '../escape']), /Skill IDs/);
   assert.throws(() => handlers.get('launcher:save-mcp-registry')({ sender }, {
-    servers: [{ id: 'local', command: 'node', args: [], allowedTools: ['*'], timeoutMs: 5000 }],
+    servers: [{ id: 'local', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['*'], timeoutMs: 5000 }],
   }), /allowedTools/);
   assert.throws(() => handlers.get('launcher:cancel-task')({ sender }, 'task\nnext'), /task ID/);
 });

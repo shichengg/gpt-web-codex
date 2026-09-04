@@ -226,11 +226,11 @@ function Mcp() {
 
   return <section className="panel stack">
     <h2>Local stdio MCP registry</h2>
-    <p>Only explicit local stdio commands and named tools are accepted. URLs, wildcard tools, credentials, and environment settings are not supported.</p>
+    <p>Only the approved local <code>node</code> executable and one absolute <code>.cjs</code> entrypoint under this workspace’s <code>.codex/mcp</code> folder are accepted. URLs, shells, npx, wildcard tools, credentials, and environment settings are not supported.</p>
     <form className="stack" onSubmit={addServer}>
       <label>Server ID<input onChange={(event) => setId(event.target.value)} required value={id} /></label>
       <label>Local command<input onChange={(event) => setCommand(event.target.value)} required value={command} /></label>
-      <label>Arguments (one per line)<textarea onChange={(event) => setArgs(event.target.value)} value={args} /></label>
+      <label>Approved entrypoint (one absolute .cjs path)<textarea onChange={(event) => setArgs(event.target.value)} value={args} /></label>
       <label>Allowed tools (one per line)<textarea onChange={(event) => setAllowedTools(event.target.value)} required value={allowedTools} /></label>
       <label>Timeout (ms)<input min="1000" onChange={(event) => setTimeoutMs(event.target.value)} required type="number" value={timeoutMs} /></label>
       <div className="actions"><button type="submit">Add server</button></div>

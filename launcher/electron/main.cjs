@@ -3,7 +3,9 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
-const { createRegistryStore, validateRegistryDraft } = require('./registry.cjs');
+const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
+const { RuntimeClient, redactAndBound } = require('./runtime-client.cjs');
+const { createRuntimeSupervisor } = require('./runtime-supervisor.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
@@ -57,10 +59,15 @@ function createDefaultController() {
   });
 }
 
-async function createProfileController({ userDataPath, shell, runtimeSupervisor }) {
+async function createProfileController({ userDataPath, shell, runtimeSupervisor, runtimeClient, publishActivity }) {
   const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
   const base = createDefaultController();
   const registries = new Map();
+  const client = runtimeClient ?? (typeof runtimeSupervisor?.call === 'function' ? new RuntimeClient(runtimeSupervisor) : undefined);
+
+  if (runtimeSupervisor?.subscribeLogs && publishActivity) {
+    runtimeSupervisor.subscribeLogs(publishActivity);
+  }
 
   function registryFor(profileId) {
     let registry = registries.get(profileId);
@@ -73,8 +80,38 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor 
     return registry;
   }
 
+  function registryPathFor(profileId) {
+    return path.join(userDataPath, 'mcp-registries', `${profileId}.json`);
+  }
+
+  async function runtimeSnapshot() {
+    if (!client) return base.snapshot();
+    const snapshot = await client.snapshot();
+    const active = await profiles.getActive();
+    return {
+      state: snapshot.state,
+      workspace: active?.workspaceRoot ?? null,
+      ...(snapshot.message ? { message: snapshot.message } : {}),
+    };
+  }
+
   return Object.freeze({
     ...base,
+    snapshot: runtimeSnapshot,
+    start: async () => {
+      const active = await profiles.getActive();
+      if (!active || !runtimeSupervisor) throw new Error('Select a workspace profile before starting the local runtime');
+      const registry = registryFor(active.id);
+      // The core requires a physical registry file; atomically materialize an
+      // empty validated registry for a newly selected profile before spawn.
+      await registry.save(await registry.load());
+      await runtimeSupervisor.start(active, registryPathFor(active.id));
+      return runtimeSnapshot();
+    },
+    stop: async () => {
+      await runtimeSupervisor?.stop?.();
+      return runtimeSnapshot();
+    },
     listProfiles: () => profiles.list(),
     saveProfile: async (profile) => {
       const canonicalProfile = await resolveProfileRoots(profile);
@@ -85,7 +122,12 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor 
       if (existing) await saveSkillDefaults(canonicalProfile, existing.enabledSkillIds);
       return profiles.save(canonicalProfile);
     },
-    setActiveProfile: (id) => profiles.setActive(id),
+    setActiveProfile: async (id) => {
+      // One local child belongs to one profile. Stop before changing the
+      // canonical roots that the next start can pass to the child.
+      await runtimeSupervisor?.stop?.();
+      return profiles.setActive(id);
+    },
     listSkills: async () => {
       const active = await profiles.getActive();
       return active ? scanSkills(active) : [];
@@ -107,11 +149,29 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor 
       if (!active) throw new Error('Select a workspace profile before saving an MCP registry');
       // Save only a fully validated registry. A runtime reload is deliberately
       // sequenced after the atomic write so it can never run a rejected draft.
-      await registryFor(active.id).save(validateRegistryDraft(draft));
-      await runtimeSupervisor?.restart?.(active);
-      return base.snapshot();
+      await registryFor(active.id).save(await validateRegistryForProfile(draft, active));
+      await runtimeSupervisor?.restart?.(active, registryPathFor(active.id));
+      return runtimeSnapshot();
+    },
+    cancelTask: async (taskId) => {
+      if (!client) throw new Error('Local runtime activity is unavailable');
+      await client.cancel(taskId);
+      return runtimeSnapshot();
     },
   });
+}
+
+/** Redact and byte-bound runtime activity before it can cross Electron IPC. */
+function createActivityPublisher(getTrustedWebContents, maximumBytes = 4_096) {
+  if (typeof getTrustedWebContents !== 'function') throw new TypeError('Activity publisher requires trusted web contents');
+  return (entry) => {
+    const safeEntry = redactAndBound(typeof entry === 'string' ? entry : 'Invalid runtime activity entry', maximumBytes);
+    const webContents = getTrustedWebContents();
+    if (webContents && typeof webContents.send === 'function' && !webContents.isDestroyed?.()) {
+      webContents.send('launcher:log', safeEntry);
+    }
+    return safeEntry;
+  };
 }
 
 function rejectUntrustedSender(event, getTrustedWebContents) {
@@ -222,9 +282,23 @@ function boot() {
   const electron = require('electron');
   const { app, ipcMain } = electron;
   let mainWindow;
+  let runtimeSupervisor;
   app.whenReady().then(async () => {
     mainWindow = createMainWindow(electron);
-    const controller = await createProfileController({ userDataPath: app.getPath('userData'), shell: electron.shell });
+    const userDataPath = app.getPath('userData');
+    runtimeSupervisor = createRuntimeSupervisor({
+      appDataPath: userDataPath,
+      runtimeEntry: path.join(__dirname, '..', '..', 'dist', 'index.js'),
+    });
+    const runtimeClient = new RuntimeClient(runtimeSupervisor);
+    const publishActivity = createActivityPublisher(() => mainWindow?.webContents);
+    const controller = await createProfileController({
+      userDataPath,
+      shell: electron.shell,
+      runtimeSupervisor,
+      runtimeClient,
+      publishActivity,
+    });
     registerIpcHandlers(ipcMain, controller, () => mainWindow?.webContents);
     app.on('activate', () => {
       if (electron.BrowserWindow.getAllWindows().length === 0) {
@@ -234,7 +308,9 @@ function boot() {
   });
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
-      app.quit();
+      // Keep process ownership local: wait for the owned core to stop before
+      // quitting Electron so no runtime survives the launcher window.
+      void runtimeSupervisor?.stop().finally(() => app.quit());
     }
   });
 }
@@ -246,6 +322,7 @@ if (require.main === module) {
 module.exports = {
   ALLOWED_EXTERNAL_ORIGINS,
   boot,
+  createActivityPublisher,
   createMainWindow,
   createProfileController,
   isAllowedExternalUrl,

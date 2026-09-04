@@ -86,10 +86,23 @@ function sanitizeTask(id, status, output, maximumLength) {
 
 function redactAndBound(value, maximumLength) {
   const redacted = value
-    .replace(/\b(token|api_key|password)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
-    .replace(/(["'])(token|api_key|password)\1\s*:\s*(["'])[^"']*\3/gi, '$1$2$1:[REDACTED]')
+    .replace(/\b(token|api_key|password|access_token|client_secret)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/(["'])(token|api_key|password|access_token|client_secret)\1\s*:\s*(["'])[^"']*\3/gi, '$1$2$1:[REDACTED]')
     .replace(/\bauthorization\s*:\s*bearer\s+[^\s,;]+/gi, 'Authorization: Bearer [REDACTED]');
-  return redacted.length <= maximumLength ? redacted : `${redacted.slice(0, maximumLength - 1)}…`;
+  if (Buffer.byteLength(redacted, 'utf8') <= maximumLength) return redacted;
+  const marker = Buffer.from('…', 'utf8');
+  return `${decodeValidUtf8(Buffer.from(redacted, 'utf8'), maximumLength - marker.length)}…`;
+}
+
+function decodeValidUtf8(value, maximumBytes) {
+  for (let length = Math.min(maximumBytes, value.length); length >= 0; length -= 1) {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(value.subarray(0, length));
+    } catch {
+      // Back up over a partial multi-byte sequence.
+    }
+  }
+  return '';
 }
 
 module.exports = { RuntimeClient, redactAndBound };

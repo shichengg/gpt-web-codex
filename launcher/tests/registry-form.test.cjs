@@ -10,7 +10,7 @@ const { createRegistryStore, validateRegistryDraft } = require('../electron/regi
 const { createProfileController } = require('../electron/main.cjs');
 
 const validDraft = Object.freeze({
-  servers: [{ id: 'lint', command: 'node', args: ['server.cjs'], allowedTools: ['check'], timeoutMs: 30_000 }],
+  servers: [{ id: 'lint', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['check'], timeoutMs: 30_000 }],
 });
 
 test('rejects remote MCP URL and wildcard tool', () => {
@@ -32,6 +32,19 @@ test('enforces the core local stdio registry limits before persistence', () => {
     () => validateRegistryDraft({ servers: [{ ...validDraft.servers[0], command: '  ' }] }),
     /command/i,
   );
+});
+
+test('accepts only the approved node executable with one local CJS entrypoint', () => {
+  for (const server of [
+    { ...validDraft.servers[0], command: 'npx' },
+    { ...validDraft.servers[0], command: 'powershell.exe' },
+    { ...validDraft.servers[0], command: 'cmd.exe' },
+    { ...validDraft.servers[0], args: ['-e', 'process.exit()'] },
+    { ...validDraft.servers[0], args: ['https://remote.example/proxy.cjs'] },
+    { ...validDraft.servers[0], args: ['C:\\trusted\\server.cjs', '--remote=https://remote.example'] },
+  ]) {
+    assert.throws(() => validateRegistryDraft({ servers: [server] }), /approved|entrypoint|argument/i);
+  }
 });
 
 test('atomically saves an exact validated registry without retaining rejected drafts', async (t) => {
@@ -56,7 +69,11 @@ test('saves registry per active canonical profile before requesting a runtime re
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspaceRoot = path.join(root, 'workspace');
   const skillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  const mcpRoot = path.join(workspaceRoot, '.codex', 'mcp');
+  const entrypoint = path.join(mcpRoot, 'lint.cjs');
   await fs.mkdir(skillsRoot, { recursive: true });
+  await fs.mkdir(mcpRoot, { recursive: true });
+  await fs.writeFile(entrypoint, 'process.stdin.resume();');
   const restarts = [];
   const controller = await createProfileController({
     userDataPath: root,
@@ -72,11 +89,49 @@ test('saves registry per active canonical profile before requesting a runtime re
   );
   assert.deepEqual(restarts, []);
 
-  await controller.saveMcpRegistry(validDraft);
+  const profileDraft = { servers: [{ ...validDraft.servers[0], args: [entrypoint] }] };
+  await controller.saveMcpRegistry(profileDraft);
 
   assert.deepEqual(restarts, ['one']);
   assert.deepEqual(
     JSON.parse(await fs.readFile(path.join(root, 'mcp-registries', 'one.json'), 'utf8')),
-    validDraft,
+    profileDraft,
   );
+});
+
+test('controller uses its RuntimeClient and owned supervisor for start, cancel, and registry reload', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-runtime-controller-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  const skillsRoot = path.join(workspaceRoot, '.codex', 'skills');
+  const mcpRoot = path.join(workspaceRoot, '.codex', 'mcp');
+  const entrypoint = path.join(mcpRoot, 'lint.cjs');
+  await fs.mkdir(skillsRoot, { recursive: true });
+  await fs.mkdir(mcpRoot, { recursive: true });
+  await fs.writeFile(entrypoint, 'process.stdin.resume();');
+  const calls = [];
+  const supervisor = {
+    state: 'stopped',
+    async start(profile, registryPath) { calls.push(['start', profile.id, registryPath]); this.state = 'running'; },
+    async stop() { calls.push(['stop']); this.state = 'stopped'; },
+    async restart(profile, registryPath) { calls.push(['restart', profile.id, registryPath]); },
+    async call(tool, input) {
+      calls.push(['call', tool, input]);
+      if (tool === 'runtime_snapshot') return { state: this.state };
+      return { id: input.taskId, state: 'cancelled' };
+    },
+    subscribeLogs() { return () => {}; },
+  };
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' }, runtimeSupervisor: supervisor });
+  await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot, enabledSkillIds: [] });
+  await controller.setActiveProfile('one');
+  const draft = { servers: [{ ...validDraft.servers[0], args: [entrypoint] }] };
+  await controller.saveMcpRegistry(draft);
+  await controller.start();
+  await controller.cancelTask('task-1');
+
+  assert.equal(calls[0][0], 'stop');
+  assert.equal(calls.some((call) => call[0] === 'restart'), true);
+  assert.equal(calls.some((call) => call[0] === 'start'), true);
+  assert.deepEqual(calls.find((call) => call[1] === 'codex_cancel'), ['call', 'codex_cancel', { taskId: 'task-1' }]);
 });

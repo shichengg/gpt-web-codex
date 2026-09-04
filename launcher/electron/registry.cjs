@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { createJsonStateStore } = require('./state.cjs');
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -9,6 +11,7 @@ const MAX_ARGS = 64;
 const MAX_TOOLS = 128;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 120_000;
+const APPROVED_EXECUTABLES = new Set(['node', 'node.exe']);
 
 /**
  * Validate the only MCP configuration the launcher accepts: named local stdio
@@ -40,9 +43,15 @@ function validateServer(server, ids) {
   if (typeof server.command !== 'string' || !isBoundedText(server.command, 512)) {
     throw new TypeError('MCP registry server command must be a bounded local stdio command');
   }
-  if (!Array.isArray(server.args) || server.args.length > MAX_ARGS ||
+  if (!APPROVED_EXECUTABLES.has(server.command.toLowerCase())) {
+    throw new TypeError('MCP registry server command is not an approved local executable');
+  }
+  if (!Array.isArray(server.args) || server.args.length !== 1 ||
       !server.args.every((arg) => typeof arg === 'string' && isBoundedText(arg, 1_024))) {
-    throw new TypeError('MCP registry server arguments must be a bounded string list');
+    throw new TypeError('MCP registry server requires exactly one local entrypoint argument');
+  }
+  if (!isLocalCjsEntrypoint(server.args[0])) {
+    throw new TypeError('MCP registry entrypoint must be an absolute local .cjs file');
   }
   if (!Array.isArray(server.allowedTools) || server.allowedTools.length === 0 || server.allowedTools.length > MAX_TOOLS ||
       new Set(server.allowedTools).size !== server.allowedTools.length) {
@@ -70,8 +79,59 @@ function validateServer(server, ids) {
   });
 }
 
+/**
+ * Canonically bind a structurally valid entrypoint to the selected profile.
+ * Local MCP code is intentionally limited to direct files under
+ * `<workspace>/.codex/mcp`; links and sibling/remote paths are not trusted.
+ */
+async function validateRegistryForProfile(draft, profile) {
+  const registry = validateRegistryDraft(draft);
+  if (!profile || typeof profile.workspaceRoot !== 'string') {
+    throw new TypeError('A canonical workspace profile is required for MCP registry validation');
+  }
+  const approvedRoot = await canonicalDirectory(path.join(profile.workspaceRoot, '.codex', 'mcp'), 'MCP entrypoint root');
+  const servers = [];
+  for (const server of registry.servers) {
+    const entrypoint = await canonicalFile(server.args[0], 'MCP entrypoint');
+    if (!isContained(approvedRoot, entrypoint)) {
+      throw new Error('MCP entrypoint must be contained in the workspace .codex/mcp directory');
+    }
+    servers.push({ ...server, args: [entrypoint] });
+  }
+  return validateRegistryDraft({ servers });
+}
+
 function isBoundedText(value, maximumLength) {
   return value.trim().length > 0 && value.length <= maximumLength && !value.includes('\0');
+}
+
+function isLocalCjsEntrypoint(value) {
+  return (path.isAbsolute(value) || path.win32.isAbsolute(value)) && path.extname(value).toLowerCase() === '.cjs';
+}
+
+async function canonicalDirectory(value, label) {
+  try {
+    const resolved = await fs.realpath(value);
+    if (!(await fs.stat(resolved)).isDirectory()) throw new Error('not a directory');
+    return resolved;
+  } catch {
+    throw new Error(`${label} must be an existing directory`);
+  }
+}
+
+async function canonicalFile(value, label) {
+  try {
+    const resolved = await fs.realpath(value);
+    if (!(await fs.stat(resolved)).isFile()) throw new Error('not a file');
+    return resolved;
+  } catch {
+    throw new Error(`${label} must be an existing local file`);
+  }
+}
+
+function isContained(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
 /** A private, atomic registry file for exactly one already-selected profile. */
@@ -106,6 +166,8 @@ function copyRegistry(registry) {
 module.exports = {
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
+  APPROVED_EXECUTABLES,
   createRegistryStore,
+  validateRegistryForProfile,
   validateRegistryDraft,
 };

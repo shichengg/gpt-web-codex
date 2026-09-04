@@ -103,6 +103,17 @@ Only commands and arguments in this file are launched. Register the smallest
 tool allowlist needed for the workspace and review every command before
 starting the service. `timeoutMs` must be between 1,000 and 120,000 ms.
 
+### Desktop launcher executable policy
+
+The Electron launcher applies a stricter policy before it writes a profile
+registry: it permits only `node`/`node.exe` with exactly one absolute `.cjs`
+entrypoint canonically contained in `<workspace>/.codex/mcp`. It rejects
+`npx`, shells (`cmd`, PowerShell, and similar launchers), `node -e`, additional
+arguments, relative paths, links escaping that directory, remote URLs, and
+proxy-style arguments. Put an approved local server at a path such as
+`C:\workspace\.codex\mcp\repo-linter.cjs`; do not use the broader core JSON
+example above as a launcher entry without adapting it to this policy.
+
 ## Connector tools and task states
 
 The connector provides workspace metadata, bounded directory/file reads,
