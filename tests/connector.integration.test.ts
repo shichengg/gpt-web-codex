@@ -14,7 +14,7 @@ import { createGitTools } from '../src/tools/git.js';
 import { createWorkspaceTools } from '../src/tools/workspace.js';
 import { createServer, type ConnectorServer, type ConnectorDependencies } from '../src/server.js';
 
-async function fixture(http = false, codexOverride?: CodexRunner, transportOverride?: McpTransport): Promise<{ server: ConnectorServer; auth: { token: string } }> {
+async function fixture(http = false, codexOverride?: CodexRunner, transportOverride?: McpTransport, defaultSkillIds: string[] = []): Promise<{ server: ConnectorServer; auth: { token: string } }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-'));
   const skillsRoot = path.join(root, 'skills');
   const stateDir = path.join(root, 'state');
@@ -51,6 +51,7 @@ async function fixture(http = false, codexOverride?: CodexRunner, transportOverr
     mcpTransport: transportOverride ?? transport,
     codex: codexOverride ?? runner,
     tasks: taskStore,
+    defaultSkillIds,
     ...(http ? { http: { host: '127.0.0.1', port: 0 } } : {}),
   };
   return { server: await createServer(dependencies), auth: { token: 'secret' } };
@@ -76,6 +77,28 @@ describe('authenticated connector', () => {
       expect(await server.call('codex_status', { taskId: task.id }, auth)).toMatchObject({ state: 'running' });
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(await server.call('codex_status', { taskId: task.id }, auth)).toMatchObject({ state: 'succeeded' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('uses workspace default Skills only when a task omits skillIds', async () => {
+    const submitted: Array<{ prompt: string; skillIds: string[] }> = [];
+    const codex = {
+      submit: async (request: { prompt: string; skillIds: string[] }) => {
+        submitted.push(request);
+        return { id: '00000000-0000-0000-0000-000000000001', state: 'running', createdAt: '', updatedAt: '' };
+      },
+    };
+    const { server, auth } = await fixture(false, codex as unknown as CodexRunner, undefined, ['review']);
+    try {
+      await server.call('codex_submit', { prompt: 'Inspect.' }, auth);
+      await server.call('codex_submit', { prompt: 'Override.', skillIds: [] }, auth);
+
+      expect(submitted).toEqual([
+        { prompt: 'Inspect.', skillIds: ['review'] },
+        { prompt: 'Override.', skillIds: [] },
+      ]);
     } finally {
       await server.close();
     }

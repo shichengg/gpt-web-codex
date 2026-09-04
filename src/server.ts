@@ -19,6 +19,8 @@ export interface ConnectorDependencies {
   mcpTransport: McpTransport;
   codex: CodexRunner;
   tasks: TaskStore;
+  /** Launcher-owned defaults applied only when a task omits skillIds. */
+  defaultSkillIds?: string[];
   close?: () => Promise<void>;
   http?: { host: string; port: number };
 }
@@ -59,7 +61,7 @@ const tools = {
   list_mcp_servers: z.object({}).strict(),
   list_mcp_tools: z.object({ serverId: z.string().trim().min(1) }).strict(),
   call_mcp_tool: z.object({ serverId: z.string().trim().min(1), tool: z.string().trim().min(1), input: z.record(z.unknown()).default({}) }).strict(),
-  codex_submit: z.object({ prompt: z.string().trim().min(1), skillIds: z.array(z.string().trim().min(1)).default([]) }).strict(),
+  codex_submit: z.object({ prompt: z.string().trim().min(1), skillIds: z.array(z.string().trim().min(1)).optional() }).strict(),
   codex_cancel: z.object({ taskId: z.string().uuid() }).strict(),
   codex_status: z.object({ taskId: z.string().uuid() }).strict(),
   codex_output: z.object({ taskId: z.string().uuid() }).strict(),
@@ -244,7 +246,13 @@ async function route(tool: string, input: unknown, dependencies: ConnectorDepend
       return asRecord(await dependencies.mcp.call(value.serverId, value.tool, value.input, dependencies.mcpTransport, signal));
     }
     case 'codex_submit': {
-      const task = await dependencies.codex.submit(input as { prompt: string; skillIds: string[] }, signal);
+      const request = input as { prompt: string; skillIds?: string[] };
+      // An explicit empty array opts out of workspace defaults. Only omitted
+      // skillIds inherit the private, launcher-owned profile selection.
+      const task = await dependencies.codex.submit({
+        prompt: request.prompt,
+        skillIds: request.skillIds ?? dependencies.defaultSkillIds ?? [],
+      }, signal);
       return { id: task.id, state: task.state, createdAt: task.createdAt, updatedAt: task.updatedAt };
     }
     case 'codex_cancel': {

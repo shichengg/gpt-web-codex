@@ -113,6 +113,10 @@ function createRuntimeSupervisor(options) {
         CODEX_STATE_DIR: stateDir,
         CODEX_MCP_REGISTRY: mcpRegistryPath,
         CODEX_CONNECTOR_TOKEN: token,
+        // Profile defaults are validated against the selected workspace catalog
+        // before this supervisor is started. The core applies them only if a
+        // remote MCP task omits skillIds entirely.
+        CODEX_DEFAULT_SKILL_IDS: JSON.stringify(validatedDefaultSkillIds(profile)),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -282,6 +286,16 @@ function validateStart(profile, mcpRegistryPath) {
       typeof mcpRegistryPath !== 'string' || !path.isAbsolute(mcpRegistryPath)) {
     throw new TypeError('Runtime supervisor requires a validated profile and private registry path');
   }
+}
+
+function validatedDefaultSkillIds(profile) {
+  if (profile.enabledSkillIds === undefined) return [];
+  if (!Array.isArray(profile.enabledSkillIds) || profile.enabledSkillIds.length > 64 ||
+      new Set(profile.enabledSkillIds).size !== profile.enabledSkillIds.length ||
+      !profile.enabledSkillIds.every((id) => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id))) {
+    throw new TypeError('Runtime supervisor requires validated profile Skill defaults');
+  }
+  return profile.enabledSkillIds;
 }
 
 function positiveInteger(value, fallback, minimum, maximum, name) {

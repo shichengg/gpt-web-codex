@@ -60,5 +60,6 @@ async function configWithPort(port: number): Promise<BridgeConfig> {
     stateDir,
     connectorToken: 'test-token',
     mcpRegistryPath,
+    defaultSkillIds: [],
   };
 }

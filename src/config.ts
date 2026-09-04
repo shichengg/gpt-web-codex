@@ -8,6 +8,7 @@ export interface BridgeConfig {
   stateDir: string;
   connectorToken: string;
   mcpRegistryPath: string;
+  defaultSkillIds: string[];
 }
 
 export class ConfigError extends Error {
@@ -27,6 +28,8 @@ const configSchema = z.object({
   stateDir: z.string().trim().min(1),
   connectorToken: z.string().trim().min(1),
   mcpRegistryPath: z.string().trim().min(1),
+  defaultSkillIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)).max(64)
+    .refine((ids) => new Set(ids).size === ids.length, { message: 'default Skill IDs must be unique' }),
 });
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -51,6 +54,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): BridgeConfig {
     stateDir: env.CODEX_STATE_DIR?.trim() || `${workspaceRoot}/.codex/state`,
     connectorToken,
     mcpRegistryPath: env.CODEX_MCP_REGISTRY?.trim() || `${workspaceRoot}/mcp-registry.json`,
+    defaultSkillIds: loadDefaultSkillIds(env),
   });
 
   if (!result.success) {
@@ -58,4 +62,15 @@ export function loadConfig(env: NodeJS.ProcessEnv): BridgeConfig {
   }
 
   return result.data;
+}
+
+/** Parse only the launcher-owned JSON array; callers never supply defaults per request. */
+function loadDefaultSkillIds(env: NodeJS.ProcessEnv): unknown {
+  const raw = env.CODEX_DEFAULT_SKILL_IDS;
+  if (!raw?.trim()) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ConfigError('Invalid configuration: CODEX_DEFAULT_SKILL_IDS must be a JSON array');
+  }
 }

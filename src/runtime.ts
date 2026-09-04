@@ -53,6 +53,7 @@ async function createDependencies(config: BridgeConfig): Promise<ConnectorDepend
     mcpTransport: new StdioMcpTransport(),
     codex: new CodexRunner({ workspaceRoot: config.workspaceRoot, catalog: skills, store: tasks }),
     tasks,
+    defaultSkillIds: config.defaultSkillIds,
   };
 }
 

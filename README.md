@@ -134,6 +134,12 @@ The **Settings & Diagnostics** view checks Codex, the managed runtime, active
 profile, connector identity, and Tunnel availability, and can open the local
 diagnostic-log folder. Its records contain fixed, redacted status messages.
 
+Each workspace profile can enable a default set of Skills in the desktop
+window. The launcher passes that validated selection privately to its managed
+runtime. A ChatGPT `codex_submit` call that omits `skillIds` uses those
+defaults; an explicit `skillIds` array (including `[]`) overrides them for
+that task only.
+
 This MVP does not package an OpenAI Tunnel client. The Task 6 adapter remains
 unavailable until a compatible client and its command contract are explicitly
 provisioned and verified.

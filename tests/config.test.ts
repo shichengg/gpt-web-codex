@@ -57,6 +57,16 @@ describe('loadConfig', () => {
     }).port).toBe(0);
   });
 
+  test('reads bounded desktop Skill defaults from the supervised runtime environment', () => {
+    const config = loadConfig({
+      CODEX_WORKSPACE_ROOT: 'C:/work',
+      CODEX_CONNECTOR_TOKEN: 'test-token',
+      CODEX_DEFAULT_SKILL_IDS: '["review","sql"]',
+    });
+
+    expect(config.defaultSkillIds).toEqual(['review', 'sql']);
+  });
+
   test('rejects whitespace-only required values', () => {
     expect(() => loadConfig({
       CODEX_WORKSPACE_ROOT: '   ',
