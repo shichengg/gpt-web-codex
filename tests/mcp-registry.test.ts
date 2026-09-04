@@ -17,6 +17,11 @@ const fakeTransport: McpTransport = {
 };
 
 describe('McpRegistry', () => {
+  test('the example MCP registry passes production validation', async () => {
+    const registry = await loadMcpRegistry(path.resolve('examples/mcp-registry.json'));
+    expect(registry.list()).toEqual([]);
+  });
+
   test('permits only a registered local stdio tool', async () => {
     const registry = McpRegistry.fromJson({
       servers: [{ id: 'lint', command: 'node', args: ['lint.mjs'], allowedTools: ['check'] }],

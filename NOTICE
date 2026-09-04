@@ -1,0 +1,10 @@
+GPT Web Codex NOTICE
+
+This project is an independent connector-only implementation. Its connection
+model was informed by m4j2rpf766-crypto/gpt-web-codex, released under the MIT
+License. See https://github.com/m4j2rpf766-crypto/gpt-web-codex for the
+upstream project and its full license text.
+
+This project does not include, copy, or distribute the upstream project's
+browser-extension code. The implementation in this repository exposes a
+loopback-first, authenticated MCP connector for a single local workspace.

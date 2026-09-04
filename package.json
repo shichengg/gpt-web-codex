@@ -2,11 +2,13 @@
   "name": "gpt-web-codex",
   "version": "0.1.0",
   "private": true,
+  "description": "Loopback-first authenticated ChatGPT connector for one local Codex workspace",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js"
   },
   "dependencies": {
