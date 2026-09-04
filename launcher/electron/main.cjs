@@ -64,6 +64,7 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
   const base = createDefaultController();
   const registries = new Map();
   const client = runtimeClient ?? (typeof runtimeSupervisor?.call === 'function' ? new RuntimeClient(runtimeSupervisor) : undefined);
+  let runtimeOperationQueue = Promise.resolve();
 
   if (runtimeSupervisor?.subscribeLogs && publishActivity) {
     runtimeSupervisor.subscribeLogs(publishActivity);
@@ -84,13 +85,18 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
     return path.join(userDataPath, 'mcp-registries', `${profileId}.json`);
   }
 
+  function serializeRuntimeOperation(operation) {
+    const next = runtimeOperationQueue.then(operation, operation);
+    runtimeOperationQueue = next.catch(() => undefined);
+    return next;
+  }
+
   async function runtimeSnapshot() {
     if (!client) return base.snapshot();
     const snapshot = await client.snapshot();
-    const active = await profiles.getActive();
     return {
       state: snapshot.state,
-      workspace: active?.workspaceRoot ?? null,
+      workspace: snapshot.workspace ?? null,
       ...(snapshot.message ? { message: snapshot.message } : {}),
     };
   }
@@ -98,7 +104,7 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
   return Object.freeze({
     ...base,
     snapshot: runtimeSnapshot,
-    start: async () => {
+    start: () => serializeRuntimeOperation(async () => {
       const active = await profiles.getActive();
       if (!active || !runtimeSupervisor) throw new Error('Select a workspace profile before starting the local runtime');
       const registry = registryFor(active.id);
@@ -108,11 +114,11 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       await registry.save(await validateRegistryForProfile(await registry.load(), active));
       await runtimeSupervisor.start(active, registryPathFor(active.id));
       return runtimeSnapshot();
-    },
-    stop: async () => {
+    }),
+    stop: () => serializeRuntimeOperation(async () => {
       await runtimeSupervisor?.stop?.();
       return runtimeSnapshot();
-    },
+    }),
     listProfiles: () => profiles.list(),
     saveProfile: async (profile) => {
       const canonicalProfile = await resolveProfileRoots(profile);
@@ -123,12 +129,12 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       if (existing) await saveSkillDefaults(canonicalProfile, existing.enabledSkillIds);
       return profiles.save(canonicalProfile);
     },
-    setActiveProfile: async (id) => {
+    setActiveProfile: (id) => serializeRuntimeOperation(async () => {
       // One local child belongs to one profile. Stop before changing the
       // canonical roots that the next start can pass to the child.
       await runtimeSupervisor?.stop?.();
       return profiles.setActive(id);
-    },
+    }),
     listSkills: async () => {
       const active = await profiles.getActive();
       return active ? scanSkills(active) : [];
@@ -145,7 +151,7 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       if (!active) throw new Error('Select a workspace profile before opening a Skill folder');
       return openSkillFolder(active, skillId, shell);
     },
-    saveMcpRegistry: async (draft) => {
+    saveMcpRegistry: (draft) => serializeRuntimeOperation(async () => {
       const active = await profiles.getActive();
       if (!active) throw new Error('Select a workspace profile before saving an MCP registry');
       // Save only a fully validated registry. A runtime reload is deliberately
@@ -153,7 +159,7 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       await registryFor(active.id).save(await validateRegistryForProfile(draft, active));
       await runtimeSupervisor?.restart?.(active, registryPathFor(active.id));
       return runtimeSnapshot();
-    },
+    }),
     cancelTask: async (taskId) => {
       if (!client) throw new Error('Local runtime activity is unavailable');
       await client.cancel(taskId);
@@ -279,6 +285,19 @@ function createMainWindow(electron) {
   return window;
 }
 
+/** Quit only after the owned child confirms it has stopped. */
+async function stopRuntimeBeforeQuit(runtimeSupervisor, quit) {
+  try {
+    await runtimeSupervisor?.stop?.();
+    quit();
+    return true;
+  } catch {
+    // Do not surface a raw child-process error here: it may contain runtime
+    // data. Keeping Electron alive lets the supervisor retain ownership.
+    return false;
+  }
+}
+
 function boot() {
   const electron = require('electron');
   const { app, ipcMain } = electron;
@@ -311,7 +330,7 @@ function boot() {
     if (process.platform !== 'darwin') {
       // Keep process ownership local: wait for the owned core to stop before
       // quitting Electron so no runtime survives the launcher window.
-      void runtimeSupervisor?.stop().finally(() => app.quit());
+      void stopRuntimeBeforeQuit(runtimeSupervisor, () => app.quit());
     }
   });
 }
@@ -334,5 +353,6 @@ module.exports = {
   validateSkillIds,
   validateWorkspaceProfileDraft,
   validateTaskId,
+  stopRuntimeBeforeQuit,
   windowOptions,
 };

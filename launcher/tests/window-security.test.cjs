@@ -7,6 +7,7 @@ const {
   isAllowedExternalUrl,
   registerIpcHandlers,
   rendererEntryUrl,
+  stopRuntimeBeforeQuit,
   windowOptions,
 } = require('../electron/main.cjs');
 
@@ -36,6 +37,17 @@ test('main process permits only the explicit documentation allowlist', () => {
   assert.equal(isAllowedExternalUrl('https://platform.openai.com/docs'), true);
   assert.equal(isAllowedExternalUrl('https://evil.example/docs'), false);
   assert.equal(isAllowedExternalUrl('file:///C:/secrets.txt'), false);
+});
+
+test('does not quit Electron when the owned runtime cannot stop', async () => {
+  let quitCalls = 0;
+  const stopped = await stopRuntimeBeforeQuit(
+    { stop: async () => { throw new Error('runtime stop failed'); } },
+    () => { quitCalls += 1; },
+  );
+
+  assert.equal(stopped, false);
+  assert.equal(quitCalls, 0);
 });
 
 test('IPC rejects a sender other than the current launcher renderer', () => {

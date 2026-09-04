@@ -118,6 +118,113 @@ test('redacts the generated connector token from child activity and snapshots', 
   await supervisor.stop();
 });
 
+test('never emits token fragments split across chunks and ignores stream data after exit', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+  const logs = [];
+  supervisor.subscribeLogs((entry) => logs.push(entry));
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  child.stderr.emit('data', Buffer.from('prefix private-token-'));
+  child.stderr.emit('data', Buffer.from('123456 suffix'));
+  child.emit('exit', 0);
+  child.stderr.emit('data', Buffer.from('private-token-123456 after exit'));
+
+  assert.equal(logs.some((entry) => /private-token-|123456/.test(entry)), false);
+  assert.equal(logs.join('\n').includes('private-token-123456'), false);
+});
+
+test('owns Windows descendants with a fixed taskkill process-tree command', async () => {
+  const child = delayedChild();
+  child.pid = 4242;
+  const taskkillCalls = [];
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    platform: 'win32', stopGraceMs: 10,
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+    spawnTaskkill(command, args, options) {
+      taskkillCalls.push({ command, args, options });
+      const taskkill = new EventEmitter();
+      queueMicrotask(() => {
+        child.exitCode = 0;
+        child.emit('exit', 0);
+        taskkill.emit('exit', 0);
+      });
+      return taskkill;
+    },
+  });
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  await supervisor.stop();
+
+  assert.deepEqual(taskkillCalls, [{
+    command: 'taskkill', args: ['/pid', '4242', '/t', '/f'], options: { shell: false, stdio: 'ignore', windowsHide: true },
+  }]);
+});
+
+test('keeps an unexpected child exit as an error with a secret-free cause', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  child.emit('exit', 7);
+
+  assert.equal(supervisor.status().state, 'error');
+  assert.match(supervisor.status().message, /exited unexpectedly/i);
+  assert.equal(JSON.stringify(supervisor.status()).includes('private-token-123456'), false);
+});
+
+test('keeps an unexpected child error as a bounded secret-free runtime failure', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456', maxLogBytes: 128,
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  child.emit('error', new Error(`runtime private-token-123456 ${'界'.repeat(1_000)}`));
+
+  assert.equal(supervisor.status().state, 'error');
+  assert.equal(Buffer.byteLength(supervisor.status().message, 'utf8') <= 128, true);
+  assert.equal(supervisor.status().message.includes('private-token-123456'), false);
+  await supervisor.stop();
+});
+
+test('rejects oversized readiness output without retaining an unbounded buffer', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456', maxReadyBytes: 64,
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('x'.repeat(65))));
+      return child;
+    },
+  });
+
+  await assert.rejects(
+    () => supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json'),
+    /readiness output exceeded/i,
+  );
+  assert.equal(supervisor.status().state, 'error');
+});
+
 test('reports stopped only after the child exits and escalates a delayed stop', async () => {
   const child = delayedChild();
   const supervisor = createRuntimeSupervisor({
@@ -133,6 +240,7 @@ test('reports stopped only after the child exits and escalates a delayed stop', 
 
   await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
   const stopping = supervisor.stop();
+  await Promise.resolve();
   assert.equal(supervisor.status().state, 'stopping');
   const result = await Promise.race([
     stopping.then(() => 'stopped'),

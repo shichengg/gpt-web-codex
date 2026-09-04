@@ -22,48 +22,58 @@ function createRuntimeSupervisor(options) {
   const request = options.request ?? requestRuntimeTool;
   const tokenFactory = options.tokenFactory ?? randomUUID;
   const readyTimeoutMs = positiveInteger(options.readyTimeoutMs, 15_000, 1_000, 60_000, 'readyTimeoutMs');
+  const maxReadyBytes = positiveInteger(options.maxReadyBytes, 8_192, 64, 65_536, 'maxReadyBytes');
   const stopGraceMs = positiveInteger(options.stopGraceMs, 5_000, 10, 30_000, 'stopGraceMs');
   const forceStopTimeoutMs = positiveInteger(options.forceStopTimeoutMs, 5_000, 10, 30_000, 'forceStopTimeoutMs');
   const maxLogBytes = positiveInteger(options.maxLogBytes, 4_096, 128, 16_384, 'maxLogBytes');
   const maxLogs = positiveInteger(options.maxLogs, 64, 1, 128, 'maxLogs');
+  const platform = options.platform ?? process.platform;
+  const spawnTaskkill = options.spawnTaskkill ?? spawnChild;
+  const forceTerminate = options.forceTerminate ?? ((owned) => terminateProcessTree(owned, platform, spawnTaskkill));
   let child;
   let active;
   let currentToken;
+  let failureMessage;
+  let childOutput;
+  let streamListeners;
   let state = 'stopped';
-  let stopping;
-  let startQueue = Promise.resolve();
+  let operationQueue = Promise.resolve();
   const logs = [];
   const logListeners = new Set();
 
   function status() {
-    return Object.freeze({ state, workspace: active?.profile.workspaceRoot ?? null });
+    return Object.freeze({
+      state,
+      workspace: active?.profile.workspaceRoot ?? null,
+      ...(failureMessage ? { message: failureMessage } : {}),
+    });
   }
 
-  function appendLog(entry) {
+  function appendLog(entry, token = currentToken) {
     const source = typeof entry === 'string' ? entry : 'Invalid runtime activity entry';
-    const safe = redactAndBound(redactRuntimeToken(source, currentToken), maxLogBytes);
+    const safe = redactAndBound(redactRuntimeToken(source, token), maxLogBytes);
     logs.unshift(safe);
     if (logs.length > maxLogs) logs.length = maxLogs;
     for (const listener of logListeners) listener(safe);
   }
 
-  function start(profile, mcpRegistryPath) {
-    // Serialize starts, so two renderer requests cannot briefly own two
-    // runtime processes. stop remains immediate so it can cancel a startup.
-    const next = startQueue.then(
-      () => startRuntime(profile, mcpRegistryPath),
-      () => startRuntime(profile, mcpRegistryPath),
-    );
-    startQueue = next.catch(() => undefined);
+  function enqueue(operation) {
+    const next = operationQueue.then(operation, operation);
+    operationQueue = next.catch(() => undefined);
     return next;
+  }
+
+  function start(profile, mcpRegistryPath) {
+    return enqueue(() => startRuntime(profile, mcpRegistryPath));
   }
 
   async function startRuntime(profile, mcpRegistryPath) {
     validateStart(profile, mcpRegistryPath);
     if (state === 'running' && active?.profile.id === profile.id) return status();
-    if (state !== 'stopped') await stop();
+    if (state !== 'stopped') await stopRuntime();
 
     state = 'starting';
+    failureMessage = undefined;
     const token = tokenFactory();
     if (typeof token !== 'string' || token.length < 16) throw new Error('Runtime token factory returned an invalid token');
     currentToken = token;
@@ -85,72 +95,123 @@ function createRuntimeSupervisor(options) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child = nextChild;
+    childOutput = createChildOutput(token, appendLog);
+    // A starting child already owns this profile. This makes snapshots reflect
+    // the process that exists, not whichever profile was selected most recently.
+    active = { profile: { ...profile }, token, url: undefined };
     try {
-      const url = await waitForReady(nextChild, readyTimeoutMs, appendLog);
-      active = { profile: { ...profile }, token, url };
+      const url = await waitForReady(nextChild, readyTimeoutMs, maxReadyBytes, childOutput);
+      active.url = url;
       state = 'running';
-      // Read child activity only in the main process. appendLog redacts and
-      // byte-bounds it before subscribers (and therefore IPC) can see it.
-      nextChild.stdout.on('data', (chunk) => appendLog(chunk.toString('utf8')));
-      nextChild.stderr.on('data', (chunk) => appendLog(chunk.toString('utf8')));
-      nextChild.once('exit', (code) => {
-        if (child !== nextChild) return;
-        child = undefined;
-        active = undefined;
-        currentToken = undefined;
-        state = 'stopped';
-        if (code !== 0 && code !== null) appendLog(`Runtime process exited with code ${code}`);
-      });
+      attachRuntimeListeners(nextChild, token);
       return status();
     } catch (error) {
-      state = 'error';
-      appendLog(error instanceof Error ? error.message : 'Runtime startup failed');
-      await terminate(nextChild, stopGraceMs, forceStopTimeoutMs, appendLog);
+      const cause = error instanceof Error ? error.message : 'Runtime startup failed';
+      recordFailure(cause, token);
+      try {
+        await terminate(nextChild, stopGraceMs, forceStopTimeoutMs, appendLog, forceTerminate);
+      } catch (stopError) {
+        recordFailure(stopError instanceof Error ? stopError.message : 'Runtime startup cleanup failed', token);
+      }
+      disposeRuntimeStreams(nextChild);
       if (child === nextChild) child = undefined;
       active = undefined;
       currentToken = undefined;
-      state = 'stopped';
+      state = 'error';
       throw error;
     }
   }
 
-  async function stop() {
-    if (stopping) return stopping;
-    stopping = (async () => {
-      if (!child) {
-        active = undefined;
-        state = 'stopped';
-        return status();
-      }
-      state = 'stopping';
-      const owned = child;
-      await terminate(owned, stopGraceMs, forceStopTimeoutMs, appendLog);
-      if (child === owned) child = undefined;
+  function stop() {
+    return enqueue(stopRuntime);
+  }
+
+  async function stopRuntime() {
+    if (!child) {
       active = undefined;
       currentToken = undefined;
+      failureMessage = undefined;
       state = 'stopped';
       return status();
-    })();
-    try {
-      return await stopping;
-    } finally {
-      stopping = undefined;
     }
+    state = 'stopping';
+    const owned = child;
+    try {
+      await terminate(owned, stopGraceMs, forceStopTimeoutMs, appendLog, forceTerminate);
+    } catch (error) {
+      recordFailure(error instanceof Error ? error.message : 'Runtime stop failed', currentToken);
+      state = 'error';
+      throw error;
+    }
+    disposeRuntimeStreams(owned);
+    if (child === owned) child = undefined;
+    active = undefined;
+    currentToken = undefined;
+    failureMessage = undefined;
+    state = 'stopped';
+    return status();
   }
 
   function restart(profile, mcpRegistryPath) {
-    const next = startQueue.then(
-      () => restartRuntime(profile, mcpRegistryPath),
-      () => restartRuntime(profile, mcpRegistryPath),
-    );
-    startQueue = next.catch(() => undefined);
-    return next;
+    return enqueue(() => restartRuntime(profile, mcpRegistryPath));
   }
 
   async function restartRuntime(profile, mcpRegistryPath) {
     if (state !== 'running') return status();
-    await stop();
+    await stopRuntime();
     return startRuntime(profile, mcpRegistryPath);
+  }
+
+  function attachRuntimeListeners(nextChild, token) {
+    const onStdout = (chunk) => childOutput?.write(chunk);
+    const onStderr = (chunk) => childOutput?.write(chunk);
+    const onExit = (code, signal) => {
+      if (child !== nextChild) return;
+      disposeRuntimeStreams(nextChild);
+      if (state === 'stopping') return;
+      child = undefined;
+      active = undefined;
+      if (state === 'error') {
+        currentToken = undefined;
+        return;
+      }
+      if ((code !== 0 && code !== null) || signal) {
+        recordFailure(`Runtime process exited unexpectedly (${signal ?? `code ${code}`})`, token);
+        state = 'error';
+      } else {
+        state = 'stopped';
+      }
+      currentToken = undefined;
+    };
+    const onError = (error) => {
+      if (child !== nextChild || state === 'stopping') return;
+      recordFailure(error instanceof Error ? error.message : 'Runtime child emitted an error', token);
+      state = 'error';
+    };
+    streamListeners = { nextChild, onStdout, onStderr, onExit, onError };
+    nextChild.stdout.on('data', onStdout);
+    nextChild.stderr.on('data', onStderr);
+    nextChild.once('exit', onExit);
+    nextChild.once('error', onError);
+  }
+
+  function disposeRuntimeStreams(nextChild) {
+    if (streamListeners?.nextChild === nextChild) {
+      nextChild.stdout.removeListener('data', streamListeners.onStdout);
+      nextChild.stderr.removeListener('data', streamListeners.onStderr);
+      nextChild.removeListener('exit', streamListeners.onExit);
+      nextChild.removeListener('error', streamListeners.onError);
+      streamListeners = undefined;
+    }
+    if (child === nextChild && childOutput) {
+      childOutput.close();
+      childOutput = undefined;
+    }
+  }
+
+  function recordFailure(cause, token) {
+    failureMessage = redactAndBound(redactRuntimeToken(String(cause), token), maxLogBytes);
+    appendLog(failureMessage, token);
   }
 
   async function call(tool, input) {
@@ -184,24 +245,37 @@ function positiveInteger(value, fallback, minimum, maximum, name) {
   return selected;
 }
 
-async function waitForReady(child, timeoutMs, appendLog) {
+async function waitForReady(child, timeoutMs, maxReadyBytes, logSink) {
   if (!child.stdout || !child.stderr) throw new Error('Runtime child does not expose stdio');
   return new Promise((resolve, reject) => {
-    let output = '';
+    let pendingReady = '';
     const timer = setTimeout(() => finish(new Error('Runtime did not report readiness in time')), timeoutMs);
     const onData = (chunk) => {
-      output += chunk.toString('utf8');
-      const lines = output.split(/\r?\n/);
-      output = lines.pop() ?? '';
+      if (Buffer.isBuffer(chunk) && chunk.length > maxReadyBytes) {
+        return finish(new Error('Runtime readiness output exceeded its bound'));
+      }
+      const text = chunk.toString('utf8');
+      if (Buffer.byteLength(text, 'utf8') > maxReadyBytes) {
+        return finish(new Error('Runtime readiness output exceeded its bound'));
+      }
+      pendingReady += text;
+      if (Buffer.byteLength(pendingReady, 'utf8') > maxReadyBytes) {
+        return finish(new Error('Runtime readiness output exceeded its bound'));
+      }
+      const lines = pendingReady.split(/\r?\n/);
+      pendingReady = lines.pop() ?? '';
       for (const line of lines) {
+        if (Buffer.byteLength(line, 'utf8') > maxReadyBytes) {
+          return finish(new Error('Runtime readiness output exceeded its bound'));
+        }
         const ready = parseReady(line);
         if (ready) return finish(undefined, ready);
-        if (line) appendLog(line);
+        if (line) logSink.write(`${line}\n`);
       }
     };
     const onError = (error) => finish(error instanceof Error ? error : new Error('Runtime child failed'));
     const onExit = (code) => finish(new Error(`Runtime exited before readiness (${code ?? 'unknown'})`));
-    const onStderr = (chunk) => appendLog(chunk.toString('utf8'));
+    const onStderr = (chunk) => logSink.write(chunk);
     const cleanup = () => {
       clearTimeout(timer);
       child.stdout.removeListener('data', onData);
@@ -230,7 +304,7 @@ function parseReady(line) {
   }
 }
 
-async function terminate(child, graceMs, forceStopTimeoutMs, appendLog) {
+async function terminate(child, graceMs, forceStopTimeoutMs, appendLog, forceTerminate) {
   if (hasExited(child)) return;
   const exit = observeExit(child);
   try {
@@ -238,12 +312,69 @@ async function terminate(child, graceMs, forceStopTimeoutMs, appendLog) {
     if (await exit.wait(graceMs)) return;
 
     appendLog('Runtime process did not exit after cancellation; forcing termination');
-    sendSignal(child, 'SIGKILL');
+    await forceTerminate(child);
     if (await exit.wait(forceStopTimeoutMs)) return;
     throw new Error('Runtime process did not exit after forced termination');
   } finally {
     exit.dispose();
   }
+}
+
+function createChildOutput(token, appendLog) {
+  let pending = '';
+  let closed = false;
+  const secret = token;
+
+  function write(chunk) {
+    if (closed) return;
+    pending += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    const keep = trailingSecretPrefixLength(pending, secret);
+    const complete = pending.slice(0, pending.length - keep);
+    pending = pending.slice(pending.length - keep);
+    if (complete) appendLog(complete, secret);
+  }
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    if (pending) appendLog(pending, secret);
+    pending = '';
+  }
+
+  return Object.freeze({ close, write });
+}
+
+function trailingSecretPrefixLength(value, secret) {
+  const maximum = Math.min(value.length, secret.length - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    if (value.endsWith(secret.slice(0, length))) return length;
+  }
+  return 0;
+}
+
+async function terminateProcessTree(child, platform, spawnTaskkill) {
+  if (platform !== 'win32' || !Number.isInteger(child.pid) || child.pid <= 0) {
+    sendSignal(child, 'SIGKILL');
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    let taskkill;
+    try {
+      taskkill = spawnTaskkill('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    taskkill.once('error', reject);
+    taskkill.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error('Windows process-tree termination failed'));
+    });
+  });
 }
 
 function hasExited(child) {

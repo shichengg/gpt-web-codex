@@ -170,3 +170,59 @@ test('revalidates a pre-existing registry against the active profile before runt
   assert.equal(spawned, 0);
   assert.equal(restarted, 0);
 });
+
+test('serializes start and profile selection so a stale profile cannot own the runtime', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-runtime-queue-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const oneRoot = path.join(root, 'one');
+  const twoRoot = path.join(root, 'two');
+  const oneSkills = path.join(oneRoot, '.codex', 'skills');
+  const twoSkills = path.join(twoRoot, '.codex', 'skills');
+  await Promise.all([
+    fs.mkdir(oneSkills, { recursive: true }),
+    fs.mkdir(twoSkills, { recursive: true }),
+    fs.mkdir(path.join(oneRoot, '.codex', 'mcp'), { recursive: true }),
+    fs.mkdir(path.join(twoRoot, '.codex', 'mcp'), { recursive: true }),
+  ]);
+  const calls = [];
+  let resolveStarted;
+  let releaseStart;
+  const enteredStart = new Promise((resolve) => { resolveStarted = resolve; });
+  const heldStart = new Promise((resolve) => { releaseStart = resolve; });
+  const supervisor = {
+    state: 'stopped', workspace: null,
+    async start(profile) {
+      calls.push(['start', profile.id]);
+      resolveStarted();
+      await heldStart;
+      this.state = 'running';
+      this.workspace = profile.workspaceRoot;
+    },
+    async stop() { calls.push(['stop']); this.state = 'stopped'; this.workspace = null; },
+    async call(tool) {
+      if (tool === 'runtime_snapshot') return { state: this.state, workspace: this.workspace };
+      return {};
+    },
+    subscribeLogs() { return () => {}; },
+  };
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' }, runtimeSupervisor: supervisor });
+  await controller.saveProfile({ id: 'one', workspaceRoot: oneRoot, skillsRoot: oneSkills, enabledSkillIds: [] });
+  await controller.saveProfile({ id: 'two', workspaceRoot: twoRoot, skillsRoot: twoSkills, enabledSkillIds: [] });
+  await controller.setActiveProfile('one');
+
+  const starting = controller.start();
+  await enteredStart;
+  const switching = controller.setActiveProfile('two');
+  const switchState = await Promise.race([
+    switching.then(() => 'finished'),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 10)),
+  ]);
+  assert.equal(switchState, 'pending');
+  releaseStart();
+  const startSnapshot = await starting;
+  await switching;
+
+  assert.deepEqual(startSnapshot, { state: 'running', workspace: await fs.realpath(oneRoot) });
+  assert.deepEqual(calls, [['stop'], ['start', 'one'], ['stop']]);
+  assert.deepEqual(await controller.snapshot(), { state: 'stopped', workspace: null });
+});

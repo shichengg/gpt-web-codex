@@ -68,6 +68,7 @@ function sanitizeSnapshot(value, maximumLength) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     state: RUNTIME_STATES.has(source.state) ? source.state : 'error',
+    ...(typeof source.workspace === 'string' ? { workspace: redactAndBound(source.workspace, maximumLength) } : {}),
     ...(typeof source.message === 'string' ? { message: redactAndBound(source.message, maximumLength) } : {}),
   };
 }
