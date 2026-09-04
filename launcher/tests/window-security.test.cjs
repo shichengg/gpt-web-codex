@@ -4,6 +4,8 @@ const test = require('node:test');
 const {
   createMainWindow,
   createActivityPublisher,
+  createSnapshotPublisher,
+  installQuitGuard,
   isAllowedExternalUrl,
   registerIpcHandlers,
   rendererEntryUrl,
@@ -22,6 +24,38 @@ test('redacts and byte-bounds activity in the main process before renderer IPC',
   assert.equal(Buffer.byteLength(sent[0][1], 'utf8') <= 128, true);
   assert.match(sent[0][1], /\[REDACTED\]/);
   assert.equal(sent[0][1].includes('private') || sent[0][1].includes('hidden'), false);
+});
+
+test('redacts and sends lifecycle snapshots only through the snapshot IPC channel', () => {
+  const sent = [];
+  const publish = createSnapshotPublisher(() => ({ send: (channel, snapshot) => sent.push([channel, snapshot]) }), 128);
+
+  publish({
+    state: 'error',
+    workspace: 'C:\\workspace',
+    message: 'runtime_key=private-runtime-key',
+    tunnelState: 'error',
+    tunnelConfigured: true,
+    paired: true,
+    connectorName: 'GPT Web Codex',
+    tunnelMessage: 'key=private-runtime-key',
+    runtimeKey: 'private-runtime-key',
+  });
+
+  assert.deepEqual(sent, [[
+    'launcher:snapshot-changed',
+    {
+      state: 'error',
+      workspace: 'C:\\workspace',
+      message: 'runtime_key=[REDACTED]',
+      tunnelState: 'error',
+      tunnelConfigured: true,
+      paired: true,
+      connectorName: 'GPT Web Codex',
+      tunnelMessage: 'key=[REDACTED]',
+    },
+  ]]);
+  assert.equal(JSON.stringify(sent).includes('private-runtime-key'), false);
 });
 
 test('window has isolated renderer preferences', () => {
@@ -60,6 +94,43 @@ test('stops the owned tunnel before the runtime during Electron shutdown', async
 
   assert.equal(stopped, true);
   assert.deepEqual(calls, ['tunnel-stop', 'runtime-stop', 'quit']);
+});
+
+test('guards every Electron quit until tunnel then runtime shutdown succeeds', async () => {
+  const handlers = new Map();
+  const calls = [];
+  let prevented = 0;
+  const app = {
+    on: (name, listener) => handlers.set(name, listener),
+    quit: () => {
+      calls.push('quit');
+      handlers.get('before-quit')({ preventDefault: () => { prevented += 1; } });
+    },
+  };
+  installQuitGuard(app, () => ({ stop: async () => { calls.push('runtime-stop'); } }), () => ({ stop: async () => { calls.push('tunnel-stop'); } }));
+
+  handlers.get('before-quit')({ preventDefault: () => { prevented += 1; } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(prevented, 1);
+  assert.deepEqual(calls, ['tunnel-stop', 'runtime-stop', 'quit']);
+});
+
+test('keeps Electron open after a guarded shutdown failure', async () => {
+  const handlers = new Map();
+  let quitCalls = 0;
+  let prevented = 0;
+  const app = {
+    on: (name, listener) => handlers.set(name, listener),
+    quit: () => { quitCalls += 1; },
+  };
+  installQuitGuard(app, () => ({ stop: async () => { throw new Error('runtime stop failed'); } }), () => ({ stop: async () => undefined }));
+
+  handlers.get('before-quit')({ preventDefault: () => { prevented += 1; } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(prevented, 1);
+  assert.equal(quitCalls, 0);
 });
 
 test('IPC rejects a sender other than the current launcher renderer', () => {

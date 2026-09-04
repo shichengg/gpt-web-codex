@@ -40,6 +40,7 @@ function createRuntimeSupervisor(options) {
   let operationQueue = Promise.resolve();
   const logs = [];
   const logListeners = new Set();
+  const lifecycleListeners = new Set();
 
   function status() {
     return Object.freeze({
@@ -60,6 +61,22 @@ function createRuntimeSupervisor(options) {
     logs.unshift(safe);
     if (logs.length > maxLogs) logs.length = maxLogs;
     for (const listener of logListeners) listener(safe);
+  }
+
+  /**
+   * Notify main-process lifecycle owners when this runtime can no longer be a
+   * safe Tunnel target. The event deliberately contains the already-sanitized
+   * status snapshot, never the active URL or the generated bearer token.
+   */
+  function emitRuntimeUnavailable() {
+    const event = Object.freeze({ type: 'runtime-unavailable', snapshot: status() });
+    for (const listener of lifecycleListeners) {
+      try {
+        listener(event);
+      } catch {
+        // A notification consumer must not destabilize process ownership.
+      }
+    }
   }
 
   function enqueue(operation) {
@@ -129,6 +146,7 @@ function createRuntimeSupervisor(options) {
           attachRuntimeListeners(nextChild, token);
         }
         state = 'error';
+        emitRuntimeUnavailable();
         throw error;
       }
       disposeRuntimeStreams(nextChild);
@@ -136,6 +154,7 @@ function createRuntimeSupervisor(options) {
       active = undefined;
       currentToken = undefined;
       state = 'error';
+      emitRuntimeUnavailable();
       throw error;
     }
   }
@@ -200,11 +219,13 @@ function createRuntimeSupervisor(options) {
         state = 'stopped';
       }
       currentToken = undefined;
+      emitRuntimeUnavailable();
     };
     const onError = (error) => {
       if (child !== nextChild || state === 'stopping') return;
       recordFailure(error instanceof Error ? error.message : 'Runtime child emitted an error', token);
       state = 'error';
+      emitRuntimeUnavailable();
     };
     streamListeners = { nextChild, onStdout, onStderr, onExit, onError };
     nextChild.stdout.on('data', onStdout);
@@ -246,7 +267,13 @@ function createRuntimeSupervisor(options) {
     return () => logListeners.delete(listener);
   }
 
-  return Object.freeze({ call, getActiveRuntimeUrl, restart, start, status, stop, subscribeLogs });
+  function subscribeLifecycle(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Runtime lifecycle listener must be a function');
+    lifecycleListeners.add(listener);
+    return () => lifecycleListeners.delete(listener);
+  }
+
+  return Object.freeze({ call, getActiveRuntimeUrl, restart, start, status, stop, subscribeLifecycle, subscribeLogs });
 }
 
 function validateStart(profile, mcpRegistryPath) {

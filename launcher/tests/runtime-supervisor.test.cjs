@@ -227,6 +227,33 @@ test('keeps an unexpected child exit as an error with a secret-free cause', asyn
   assert.equal(JSON.stringify(supervisor.status()).includes('private-token-123456'), false);
 });
 
+test('emits a safe runtime-unavailable lifecycle event when the child crashes', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+  const lifecycle = [];
+  supervisor.subscribeLifecycle((event) => lifecycle.push(event));
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+  child.emit('exit', 7);
+
+  assert.deepEqual(lifecycle, [{
+    type: 'runtime-unavailable',
+    snapshot: {
+      state: 'error',
+      workspace: null,
+      message: 'Runtime process exited unexpectedly (code 7)',
+    },
+  }]);
+  assert.equal(JSON.stringify(lifecycle).includes('48999'), false);
+  assert.equal(JSON.stringify(lifecycle).includes('private-token-123456'), false);
+});
+
 test('keeps an unexpected child error as a bounded secret-free runtime failure', async () => {
   const child = fakeChild();
   const supervisor = createRuntimeSupervisor({

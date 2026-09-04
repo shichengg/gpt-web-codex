@@ -123,6 +123,29 @@ function createTunnelSupervisor(options) {
     });
   }
 
+  /** Remove an unpaired setup from memory after a failed pairing attempt. */
+  async function discardConfiguration() {
+    return enqueue(async () => {
+      credentials = null;
+      connectorName = null;
+      failureMessage = undefined;
+      if (!owned) {
+        state = 'stopped';
+        return status();
+      }
+      state = 'stopping';
+      try {
+        await stopOwnedTunnel();
+        state = 'stopped';
+        return status();
+      } catch (error) {
+        failureMessage = redactTunnelLog(error instanceof Error ? error.message : 'Tunnel discard failed');
+        state = 'error';
+        throw new Error(failureMessage);
+      }
+    });
+  }
+
   function requireManagedActiveRuntime(candidate) {
     const active = options.getActiveRuntimeUrl();
     if (typeof candidate !== 'string' || typeof active !== 'string' ||
@@ -156,7 +179,7 @@ function createTunnelSupervisor(options) {
     return redactTunnelLog(source);
   }
 
-  return Object.freeze({ configure, restoreOrConnect, status, stop });
+  return Object.freeze({ configure, discardConfiguration, restoreOrConnect, status, stop });
 }
 
 /** Redact credentials before a tunnel diagnostic can be logged or rendered. */

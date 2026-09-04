@@ -17,6 +17,7 @@ const ALLOWED_EXTERNAL_ORIGINS = new Set(['https://platform.openai.com']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const TUNNEL_STATES = new Set(['stopped', 'starting', 'running', 'stopping', 'error']);
+const RUNTIME_STATES = new Set(['stopped', 'starting', 'running', 'stopping', 'error']);
 
 const windowOptions = Object.freeze({
   width: 1180,
@@ -69,6 +70,7 @@ async function createProfileController({
   runtimeSupervisor,
   runtimeClient,
   publishActivity,
+  publishSnapshot,
   tunnelSupervisor,
   connectorIdentity,
 }) {
@@ -105,6 +107,24 @@ async function createProfileController({
     const next = runtimeOperationQueue.then(operation, operation);
     runtimeOperationQueue = next.catch(() => undefined);
     return next;
+  }
+
+  async function publishCurrentSnapshot() {
+    const snapshot = await runtimeSnapshot();
+    try {
+      await publishSnapshot?.(snapshot);
+    } catch {
+      // Renderer availability must never interfere with runtime ownership.
+    }
+    return snapshot;
+  }
+
+  async function publishSnapshotAfterFailure() {
+    try {
+      await publishCurrentSnapshot();
+    } catch {
+      // Preserve the actual lifecycle failure for the IPC caller.
+    }
   }
 
   async function runtimeSnapshot() {
@@ -148,26 +168,58 @@ async function createProfileController({
     await tunnelSupervisor.restoreOrConnect({ runtimeUrl, connectorName: connectorIdentity.name() });
   }
 
+  function requireActiveRuntimeUrlForTunnel() {
+    const runtimeUrl = runtimeSupervisor?.getActiveRuntimeUrl?.();
+    if (typeof runtimeUrl !== 'string') {
+      throw new Error('Start the managed local runtime before pairing the OpenAI Tunnel');
+    }
+    return runtimeUrl;
+  }
+
+  if (runtimeSupervisor?.subscribeLifecycle && tunnelSupervisor?.stop) {
+    runtimeSupervisor.subscribeLifecycle(() => {
+      // An unexpected exit/error is delivered synchronously by the process
+      // owner. Queue route withdrawal ahead of any subsequent launcher action.
+      void serializeRuntimeOperation(async () => {
+        try {
+          await tunnelSupervisor.stop();
+        } finally {
+          await publishSnapshotAfterFailure();
+        }
+      }).catch(() => undefined);
+    });
+  }
+
   return Object.freeze({
     ...base,
     snapshot: runtimeSnapshot,
     start: () => serializeRuntimeOperation(async () => {
-      const active = await profiles.getActive();
-      if (!active || !runtimeSupervisor) throw new Error('Select a workspace profile before starting the local runtime');
-      const registry = registryFor(active.id);
-      // A registry file can predate this process or be manually modified.
-      // Reapply canonical active-profile containment immediately before spawn,
-      // then persist the canonical form that the child will load.
-      await registry.save(await validateRegistryForProfile(await registry.load(), active));
-      await runtimeSupervisor.start(active, registryPathFor(active.id));
-      await restoreTunnelForActiveRuntime();
-      return runtimeSnapshot();
+      try {
+        const active = await profiles.getActive();
+        if (!active || !runtimeSupervisor) throw new Error('Select a workspace profile before starting the local runtime');
+        const registry = registryFor(active.id);
+        // A registry file can predate this process or be manually modified.
+        // Reapply canonical active-profile containment immediately before spawn,
+        // then persist the canonical form that the child will load.
+        await registry.save(await validateRegistryForProfile(await registry.load(), active));
+        await runtimeSupervisor.start(active, registryPathFor(active.id));
+        await restoreTunnelForActiveRuntime();
+        return publishCurrentSnapshot();
+      } catch (error) {
+        await publishSnapshotAfterFailure();
+        throw error;
+      }
     }),
     stop: () => serializeRuntimeOperation(async () => {
-      // The public route is withdrawn before the local process can exit.
-      await tunnelSupervisor?.stop?.();
-      await runtimeSupervisor?.stop?.();
-      return runtimeSnapshot();
+      try {
+        // The public route is withdrawn before the local process can exit.
+        await tunnelSupervisor?.stop?.();
+        await runtimeSupervisor?.stop?.();
+        return publishCurrentSnapshot();
+      } catch (error) {
+        await publishSnapshotAfterFailure();
+        throw error;
+      }
     }),
     listProfiles: () => profiles.list(),
     saveProfile: async (profile) => {
@@ -180,11 +232,18 @@ async function createProfileController({
       return profiles.save(canonicalProfile);
     },
     setActiveProfile: (id) => serializeRuntimeOperation(async () => {
-      // One local child belongs to one profile. Stop before changing the
-      // canonical roots that the next start can pass to the child.
-      await tunnelSupervisor?.stop?.();
-      await runtimeSupervisor?.stop?.();
-      return profiles.setActive(id);
+      try {
+        // One local child belongs to one profile. Stop before changing the
+        // canonical roots that the next start can pass to the child.
+        await tunnelSupervisor?.stop?.();
+        await runtimeSupervisor?.stop?.();
+        const selected = await profiles.setActive(id);
+        await publishCurrentSnapshot();
+        return selected;
+      } catch (error) {
+        await publishSnapshotAfterFailure();
+        throw error;
+      }
     }),
     listSkills: async () => {
       const active = await profiles.getActive();
@@ -203,27 +262,49 @@ async function createProfileController({
       return openSkillFolder(active, skillId, shell);
     },
     saveMcpRegistry: (draft) => serializeRuntimeOperation(async () => {
-      const active = await profiles.getActive();
-      if (!active) throw new Error('Select a workspace profile before saving an MCP registry');
-      // Save only a fully validated registry. A runtime reload is deliberately
-      // sequenced after the atomic write so it can never run a rejected draft.
-      await registryFor(active.id).save(await validateRegistryForProfile(draft, active));
-      await tunnelSupervisor?.stop?.();
-      await runtimeSupervisor?.restart?.(active, registryPathFor(active.id));
-      await restoreTunnelForActiveRuntime();
-      return runtimeSnapshot();
+      try {
+        const active = await profiles.getActive();
+        if (!active) throw new Error('Select a workspace profile before saving an MCP registry');
+        // Save only a fully validated registry. A runtime reload is deliberately
+        // sequenced after the atomic write so it can never run a rejected draft.
+        await registryFor(active.id).save(await validateRegistryForProfile(draft, active));
+        await tunnelSupervisor?.stop?.();
+        await runtimeSupervisor?.restart?.(active, registryPathFor(active.id));
+        await restoreTunnelForActiveRuntime();
+        return publishCurrentSnapshot();
+      } catch (error) {
+        await publishSnapshotAfterFailure();
+        throw error;
+      }
     }),
     setupTunnel: (setup) => serializeRuntimeOperation(async () => {
       if (!tunnelSupervisor || !connectorIdentity?.configure || !connectorIdentity?.credentials) {
         throw new Error('OpenAI Tunnel setup is unavailable');
       }
-      await connectorIdentity.configure(setup);
-      const credentials = connectorIdentity.credentials();
-      // The private credential object goes only from identity storage to the
-      // main-process supervisor. The result below is a redacted snapshot.
-      await tunnelSupervisor.configure(credentials);
-      await restoreTunnelForActiveRuntime();
-      return runtimeSnapshot();
+      const previousCredentials = connectorIdentity.credentials();
+      const runtimeUrl = requireActiveRuntimeUrlForTunnel();
+      try {
+        // Pair with transient credentials first. They are persisted only after
+        // the Tunnel is healthy for the currently owned loopback runtime.
+        await tunnelSupervisor.configure(setup);
+        await tunnelSupervisor.restoreOrConnect({ runtimeUrl, connectorName: connectorIdentity.name() });
+        await connectorIdentity.configure(setup);
+        return publishCurrentSnapshot();
+      } catch (error) {
+        try {
+          if (previousCredentials) {
+            await tunnelSupervisor.configure(previousCredentials);
+            await restoreTunnelForActiveRuntime();
+          } else {
+            await tunnelSupervisor.discardConfiguration?.();
+          }
+        } catch {
+          // Keep the original pairing failure; both supervisor snapshots stay
+          // credential-free and allow a later explicit recovery attempt.
+        }
+        await publishSnapshotAfterFailure();
+        throw error;
+      }
     }),
     cancelTask: async (taskId) => {
       if (!client) throw new Error('Local runtime activity is unavailable');
@@ -244,6 +325,38 @@ function createActivityPublisher(getTrustedWebContents, maximumBytes = 4_096) {
     }
     return safeEntry;
   };
+}
+
+/**
+ * Send only a structured, redacted lifecycle snapshot to the trusted renderer.
+ * This second boundary keeps credentials out of snapshots even if a future
+ * controller accidentally includes an extra field.
+ */
+function createSnapshotPublisher(getTrustedWebContents, maximumBytes = 4_096) {
+  if (typeof getTrustedWebContents !== 'function') throw new TypeError('Snapshot publisher requires trusted web contents');
+  return (snapshot) => {
+    const safeSnapshot = sanitizeLauncherSnapshot(snapshot, maximumBytes);
+    const webContents = getTrustedWebContents();
+    if (webContents && typeof webContents.send === 'function' && !webContents.isDestroyed?.()) {
+      webContents.send('launcher:snapshot-changed', safeSnapshot);
+    }
+    return safeSnapshot;
+  };
+}
+
+function sanitizeLauncherSnapshot(snapshot, maximumBytes) {
+  const source = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : {};
+  const safe = {
+    state: RUNTIME_STATES.has(source.state) ? source.state : 'error',
+    workspace: typeof source.workspace === 'string' ? redactTunnelLog(source.workspace, maximumBytes) : null,
+  };
+  if (typeof source.message === 'string') safe.message = redactTunnelLog(source.message, maximumBytes);
+  if (TUNNEL_STATES.has(source.tunnelState)) safe.tunnelState = source.tunnelState;
+  if (typeof source.tunnelConfigured === 'boolean') safe.tunnelConfigured = source.tunnelConfigured;
+  if (typeof source.paired === 'boolean') safe.paired = source.paired;
+  if (typeof source.connectorName === 'string') safe.connectorName = redactTunnelLog(source.connectorName, maximumBytes);
+  if (typeof source.tunnelMessage === 'string') safe.tunnelMessage = redactTunnelLog(source.tunnelMessage, maximumBytes);
+  return Object.freeze(safe);
 }
 
 function rejectUntrustedSender(event, getTrustedWebContents) {
@@ -376,6 +489,38 @@ async function stopRuntimeBeforeQuit(runtimeSupervisor, quit, tunnelSupervisor) 
   }
 }
 
+/**
+ * Electron cannot await an async `before-quit` listener itself. Prevent the
+ * first quit, stop our public route and local child in order, then reissue quit
+ * only after both have confirmed completion. This applies on every platform.
+ */
+function installQuitGuard(app, getRuntimeSupervisor, getTunnelSupervisor) {
+  if (!app || typeof app.on !== 'function' || typeof app.quit !== 'function' ||
+      typeof getRuntimeSupervisor !== 'function' || typeof getTunnelSupervisor !== 'function') {
+    throw new TypeError('Quit guard requires Electron app and supervisor accessors');
+  }
+  let shutdownInProgress = false;
+  let shutdownComplete = false;
+  app.on('before-quit', (event) => {
+    if (shutdownComplete) return;
+    event?.preventDefault?.();
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    void stopRuntimeBeforeQuit(
+      getRuntimeSupervisor(),
+      () => {
+        shutdownComplete = true;
+        app.quit();
+      },
+      getTunnelSupervisor(),
+    ).then((stopped) => {
+      if (!stopped) shutdownInProgress = false;
+    }).catch(() => {
+      shutdownInProgress = false;
+    });
+  });
+}
+
 function boot() {
   const electron = require('electron');
   const { app, ipcMain } = electron;
@@ -397,12 +542,14 @@ function boot() {
     });
     const runtimeClient = new RuntimeClient(runtimeSupervisor);
     const publishActivity = createActivityPublisher(() => mainWindow?.webContents);
+    const publishSnapshot = createSnapshotPublisher(() => mainWindow?.webContents);
     const controller = await createProfileController({
       userDataPath,
       shell: electron.shell,
       runtimeSupervisor,
       runtimeClient,
       publishActivity,
+      publishSnapshot,
       tunnelSupervisor,
       connectorIdentity,
     });
@@ -413,11 +560,11 @@ function boot() {
       }
     });
   });
+  installQuitGuard(app, () => runtimeSupervisor, () => tunnelSupervisor);
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
-      // Keep process ownership local: wait for the owned core to stop before
-      // quitting Electron so no runtime survives the launcher window.
-      void stopRuntimeBeforeQuit(runtimeSupervisor, () => app.quit(), tunnelSupervisor);
+      // Calling app.quit enters the guarded before-quit flow on every platform.
+      app.quit();
     }
   });
 }
@@ -446,6 +593,8 @@ module.exports = {
   createActivityPublisher,
   createMainWindow,
   createProfileController,
+  createSnapshotPublisher,
+  installQuitGuard,
   isAllowedExternalUrl,
   rendererEntryUrl,
   registerIpcHandlers,

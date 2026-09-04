@@ -186,12 +186,13 @@ function Status({
     try {
       setMessage(undefined);
       await onSetupTunnel({ tunnelId: tunnelId.trim(), runtimeKey });
-      // The main process persists the private setup. Do not retain a copy in
-      // renderer state once IPC has accepted it.
-      setRuntimeKey('');
-      setMessage('Tunnel setup saved. Start the runtime to pair the connector.');
+      setMessage('Tunnel paired and saved for this running local runtime.');
     } catch {
-      setMessage('Unable to save tunnel setup. Check the Tunnel ID and runtime key.');
+      setMessage('Unable to pair the tunnel. Check the Tunnel ID, runtime key, and local runtime status.');
+    } finally {
+      // Clear this credential whether pairing succeeds or fails. The renderer
+      // never needs to retain it after the one-way setup IPC request.
+      setRuntimeKey('');
     }
   }
 
@@ -210,10 +211,10 @@ function Status({
       </div>
       <form className="stack" onSubmit={(event) => void setupTunnel(event)}>
         <h3>OpenAI Tunnel setup</h3>
-        <p>Enter the OpenAI Tunnel ID and runtime key once. The key is sent only to the main process, is not shown in status or logs, and is never saved with the workspace profile.</p>
+        <p>With the local runtime running, enter the OpenAI Tunnel ID and runtime key to pair it. The key is sent only to the main process, is not shown in status or logs, and is never saved with the workspace profile.</p>
         <label>Tunnel ID<input autoComplete="off" onChange={(event) => setTunnelId(event.target.value)} required value={tunnelId} /></label>
         <label>Runtime key<input autoComplete="off" onChange={(event) => setRuntimeKey(event.target.value)} required type="password" value={runtimeKey} /></label>
-        <div className="actions"><button type="submit">Save tunnel setup</button></div>
+        <div className="actions"><button type="submit">Pair tunnel</button></div>
       </form>
       {snapshot.tunnelMessage && <p className="error" role="alert">{snapshot.tunnelMessage}</p>}
       {message && <p>{message}</p>}
