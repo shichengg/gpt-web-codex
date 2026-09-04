@@ -35,6 +35,16 @@ export interface ConnectorServer {
   readonly httpAddress?: string;
 }
 
+interface ActiveMcpSession {
+  server: McpServer;
+  transport: StreamableHTTPServerTransport;
+}
+
+interface McpRuntime {
+  sessions: Set<ActiveMcpSession>;
+  requests: Set<IncomingMessage>;
+}
+
 const tools = {
   workspace_info: z.object({}).strict(),
   list_directory: z.object({ relativePath: z.string().trim().min(1).default('.') }).strict(),
@@ -55,10 +65,11 @@ const tools = {
 export async function createServer(dependencies: ConnectorDependencies): Promise<ConnectorServer> {
   if (!dependencies.token.trim()) throw new Error('Connector token must not be empty');
   let closed = false;
+  const runtime: McpRuntime = { sessions: new Set(), requests: new Set() };
   let httpServer: HttpServer | undefined;
   if (dependencies.http) {
     httpServer = createHttpServer((request, response) => {
-      void handleMcpRequest(request, response, dependencies).catch(() => {
+      void handleMcpRequest(request, response, dependencies, runtime).catch(() => {
         if (!response.headersSent) response.writeHead(500, { 'content-type': 'application/json' });
         if (!response.writableEnded) response.end(JSON.stringify({ error: 'Connector request failed' }));
       });
@@ -90,13 +101,17 @@ export async function createServer(dependencies: ConnectorDependencies): Promise
     async close() {
       if (closed) return;
       closed = true;
+      for (const request of runtime.requests) request.destroy();
+      await Promise.all([...runtime.sessions].map(async ({ server, transport }) => {
+        await Promise.allSettled([server.close(), transport.close()]);
+      }));
       if (httpServer) await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
       await dependencies.close?.();
     },
   };
 }
 
-async function handleMcpRequest(request: IncomingMessage, response: ServerResponse, dependencies: ConnectorDependencies): Promise<void> {
+async function handleMcpRequest(request: IncomingMessage, response: ServerResponse, dependencies: ConnectorDependencies, runtime: McpRuntime): Promise<void> {
   if (request.url !== '/mcp' || request.method !== 'POST') {
     response.writeHead(404, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: 'Not found' }));
@@ -109,13 +124,18 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
     response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'Unauthorized' } }));
     return;
   }
+  runtime.requests.add(request);
   const body = await readJson(request);
   const server = createMcpServer(dependencies);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const session = { server, transport };
+  runtime.sessions.add(session);
   try {
     await server.connect(transport);
     await transport.handleRequest(request, response, body);
   } finally {
+    runtime.sessions.delete(session);
+    runtime.requests.delete(request);
     await Promise.allSettled([server.close(), transport.close()]);
   }
 }
@@ -123,7 +143,7 @@ async function handleMcpRequest(request: IncomingMessage, response: ServerRespon
 function createMcpServer(dependencies: ConnectorDependencies): McpServer {
   const server = new McpServer({ name: 'gpt-web-codex', version: '0.1.0' });
   for (const name of Object.keys(tools)) {
-    server.registerTool(name, { description: `GPT Web Codex ${name}`, inputSchema: {} }, async (input) => {
+    server.registerTool(name, { description: `GPT Web Codex ${name}`, inputSchema: tools[name as keyof typeof tools] }, (async (input: unknown) => {
       const schema = tools[name as keyof typeof tools];
       const parsed = schema.safeParse(input);
       if (!parsed.success) {
@@ -135,7 +155,7 @@ function createMcpServer(dependencies: ConnectorDependencies): McpServer {
       } catch {
         return { isError: true, content: [{ type: 'text', text: 'Connector operation failed' }] };
       }
-    });
+    }) as never);
   }
   return server;
 }

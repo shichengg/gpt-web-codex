@@ -1,7 +1,10 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { request as httpRequest } from 'node:http';
 import { describe, expect, test } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CodexRunner } from '../src/codex/runner.js';
 import { TaskStore } from '../src/codex/tasks.js';
 import { McpRegistry, type McpTransport } from '../src/mcp/registry.js';
@@ -11,7 +14,7 @@ import { createGitTools } from '../src/tools/git.js';
 import { createWorkspaceTools } from '../src/tools/workspace.js';
 import { createServer, type ConnectorServer, type ConnectorDependencies } from '../src/server.js';
 
-async function fixture(): Promise<{ server: ConnectorServer; auth: { token: string } }> {
+async function fixture(http = false): Promise<{ server: ConnectorServer; auth: { token: string } }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-'));
   const skillsRoot = path.join(root, 'skills');
   const stateDir = path.join(root, 'state');
@@ -48,6 +51,7 @@ async function fixture(): Promise<{ server: ConnectorServer; auth: { token: stri
     mcpTransport: transport,
     codex: runner,
     tasks: taskStore,
+    ...(http ? { http: { host: '127.0.0.1', port: 0 } } : {}),
   };
   return { server: await createServer(dependencies), auth: { token: 'secret' } };
 }
@@ -84,5 +88,38 @@ describe('authenticated connector', () => {
     } finally {
       await server.close();
     }
+  });
+
+  test('serves the real MCP protocol with authenticated schemas and parameterized calls', async () => {
+    const { server } = await fixture(true);
+    const client = new Client({ name: 'integration-test', version: '0.1.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(server.httpAddress!), {
+      requestInit: { headers: { authorization: 'Bearer secret' } },
+    });
+    try {
+      await client.connect(transport);
+      const listed = await client.listTools();
+      const readFile = listed.tools.find((tool) => tool.name === 'read_file');
+      expect(readFile?.inputSchema).toMatchObject({ required: ['relativePath'] });
+      const result = await client.callTool({ name: 'list_directory', arguments: { relativePath: '.' } });
+      expect(result.isError).not.toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  test('closes an active MCP request before stopping the listener', async () => {
+    const { server } = await fixture(true);
+    const address = new URL(server.httpAddress!);
+    const request = httpRequest({ hostname: address.hostname, port: Number(address.port), path: '/mcp', method: 'POST', headers: { authorization: 'Bearer secret', 'content-type': 'application/json' } });
+    request.on('error', () => undefined);
+    const ended = new Promise<void>((resolve) => request.once('close', resolve));
+    request.write('{');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await server.close();
+    await Promise.race([ended, new Promise((resolve) => setTimeout(resolve, 500))]);
+    request.destroy();
+    expect(server.httpAddress).toBeUndefined();
   });
 });
