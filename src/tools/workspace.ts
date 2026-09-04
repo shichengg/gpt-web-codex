@@ -62,8 +62,10 @@ export function createWorkspaceTools(root: string, paths: PathPolicy): Workspace
       const directoryPath = await resolve(relativePath);
       const result: DirectoryEntry[] = [];
       const directory = await opendir(directoryPath);
+      let entriesSeen = 0;
       for await (const entry of directory) {
-          if (result.length >= WORKSPACE_LIMITS.maxEntries) break;
+          entriesSeen += 1;
+          if (entriesSeen > WORKSPACE_LIMITS.maxEntries) break;
         const childRelative = path.join(relativePath, entry.name);
         try {
           const childPath = await resolve(childRelative);

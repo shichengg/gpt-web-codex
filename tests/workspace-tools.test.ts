@@ -54,4 +54,14 @@ describe('workspace tools', () => {
 
     await expect(tools.search('needle')).resolves.toMatchObject({ matches: [], truncated: true });
   });
+
+  test('caps inspected entries even when earlier entries are rejected', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    roots.push(root);
+    await Promise.all(Array.from({ length: 201 }, (_, index) => writeFile(path.join(root, `.env-${String(index).padStart(3, '0')}`), 'secret')));
+    await writeFile(path.join(root, 'zzz-allowed.txt'), 'visible');
+    const tools = createWorkspaceTools(root, await createPathPolicy(root));
+
+    await expect(tools.listDirectory('.')).resolves.not.toContainEqual({ name: 'zzz-allowed.txt', type: 'file' });
+  });
 });
