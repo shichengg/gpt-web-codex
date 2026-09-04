@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { createProfileStore, validateProfile } = require('./profiles.cjs');
+const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
@@ -63,7 +63,15 @@ async function createProfileController({ userDataPath, shell }) {
   return Object.freeze({
     ...base,
     listProfiles: () => profiles.list(),
-    saveProfile: (profile) => profiles.save(profile),
+    saveProfile: async (profile) => {
+      const canonicalProfile = await resolveProfileRoots(profile);
+      // Validate choices supplied by the renderer and defaults retained from
+      // an existing profile against the prospective workspace catalog.
+      await saveSkillDefaults(canonicalProfile, canonicalProfile.enabledSkillIds);
+      const existing = await profiles.get(canonicalProfile.id);
+      if (existing) await saveSkillDefaults(canonicalProfile, existing.enabledSkillIds);
+      return profiles.save(canonicalProfile);
+    },
     setActiveProfile: (id) => profiles.setActive(id),
     listSkills: async () => {
       const active = await profiles.getActive();

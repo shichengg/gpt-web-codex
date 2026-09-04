@@ -125,7 +125,7 @@ async function resolveProfileRoots(profile) {
     throw new Error('Skills root must be the workspace .codex/skills directory');
   }
   const canonicalSkillsRoot = await fs.realpath(expectedSkillsRoot);
-  if (!samePath(configuredSkillsRoot, canonicalSkillsRoot)) {
+  if (!isContained(workspaceRoot, canonicalSkillsRoot) || !samePath(configuredSkillsRoot, canonicalSkillsRoot)) {
     throw new Error('Skills root must be contained in the workspace .codex/skills directory');
   }
   return { ...validated, workspaceRoot, skillsRoot: canonicalSkillsRoot };
@@ -152,6 +152,11 @@ function samePath(left, right) {
   return process.platform === 'win32'
     ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
     : normalizedLeft === normalizedRight;
+}
+
+function isContained(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
 function validateProfileId(id) {

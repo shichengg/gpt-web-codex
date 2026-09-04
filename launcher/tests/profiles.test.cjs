@@ -111,6 +111,46 @@ test('profile service and IPC reject an out-of-workspace Skills root', async (t)
   );
 });
 
+test('rejects a .codex parent junction whose canonical Skills root escapes the workspace', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-parent-link-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  const outsideCodex = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-outside-codex-'));
+  t.after(() => fs.rm(outsideCodex, { recursive: true, force: true }));
+  await fs.mkdir(path.join(workspaceRoot), { recursive: true });
+  await fs.mkdir(path.join(outsideCodex, 'skills'));
+  await fs.symlink(outsideCodex, path.join(workspaceRoot, '.codex'), 'junction');
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' } });
+
+  await assert.rejects(
+    () => controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot: path.join(outsideCodex, 'skills'), enabledSkillIds: [] }),
+    /contained/i,
+  );
+});
+
+test('catalog-gates defaults on first save and rejects retained defaults when a profile root changes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profile-catalog-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const first = await makeWorkspace(root, 'first');
+  const second = await makeWorkspace(root, 'second');
+  for (const [skillsRoot, id] of [[first.skillsRoot, 'review'], [second.skillsRoot, 'sql']]) {
+    await fs.mkdir(path.join(skillsRoot, id));
+    await fs.writeFile(path.join(skillsRoot, id, 'SKILL.md'), `---\nname: ${id}\ndescription: ${id}.\n---\nBody`);
+  }
+  const controller = await createProfileController({ userDataPath: root, shell: { openPath: async () => '' } });
+
+  await assert.rejects(
+    () => controller.saveProfile({ id: 'one', ...first, enabledSkillIds: ['outside'] }),
+    /Unknown Skill/,
+  );
+  await controller.saveProfile({ id: 'one', ...first, enabledSkillIds: ['review'] });
+  await assert.rejects(
+    () => controller.saveProfile({ id: 'one', ...second, enabledSkillIds: [] }),
+    /Unknown Skill/,
+  );
+  assert.equal((await controller.listProfiles())[0].workspaceRoot, await fs.realpath(first.workspaceRoot));
+});
+
 test('active profile defaults are catalog-validated before private persistence', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-profile-controller-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
