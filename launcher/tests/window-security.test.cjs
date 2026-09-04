@@ -50,6 +50,18 @@ test('does not quit Electron when the owned runtime cannot stop', async () => {
   assert.equal(quitCalls, 0);
 });
 
+test('stops the owned tunnel before the runtime during Electron shutdown', async () => {
+  const calls = [];
+  const stopped = await stopRuntimeBeforeQuit(
+    { stop: async () => { calls.push('runtime-stop'); } },
+    () => { calls.push('quit'); },
+    { stop: async () => { calls.push('tunnel-stop'); } },
+  );
+
+  assert.equal(stopped, true);
+  assert.deepEqual(calls, ['tunnel-stop', 'runtime-stop', 'quit']);
+});
+
 test('IPC rejects a sender other than the current launcher renderer', () => {
   const handlers = new Map();
   const trustedSender = { getURL: () => rendererEntryUrl };
@@ -82,6 +94,33 @@ test('IPC validates bounded Skill, registry, and task payloads before controller
     servers: [{ id: 'local', command: 'node', args: ['C:\\trusted\\server.cjs'], allowedTools: ['*'], timeoutMs: 5000 }],
   }), /allowedTools/);
   assert.throws(() => handlers.get('launcher:cancel-task')({ sender }, 'task\nnext'), /task ID/);
+});
+
+test('setup IPC passes credentials only to the main-process setup operation', async () => {
+  const handlers = new Map();
+  const sender = { getURL: () => rendererEntryUrl };
+  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler) };
+  const credentials = {
+    tunnelId: `tunnel_${'a'.repeat(32)}`,
+    runtimeKey: 'runtime-key-which-must-remain-private',
+  };
+  let received;
+  registerIpcHandlers(ipcMain, {
+    setupTunnel: async (input) => {
+      received = input;
+      return { state: 'running', tunnelConfigured: true, paired: true };
+    },
+  }, () => sender);
+
+  const result = await handlers.get('launcher:setup-tunnel')({ sender }, credentials);
+
+  assert.deepEqual(received, credentials);
+  assert.deepEqual(result, { state: 'running', tunnelConfigured: true, paired: true });
+  assert.equal(JSON.stringify(result).includes(credentials.runtimeKey), false);
+  assert.throws(
+    () => handlers.get('launcher:setup-tunnel')({ sender }, { ...credentials, unexpected: true }),
+    /setup/i,
+  );
 });
 
 test('window prevents navigation, denies popups, and denies permission requests', async () => {

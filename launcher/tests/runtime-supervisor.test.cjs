@@ -119,6 +119,23 @@ test('redacts the generated connector token from child activity and snapshots', 
   await supervisor.stop();
 });
 
+test('keeps the managed runtime URL out of status while allowing main-process tunnel ownership', async () => {
+  const child = fakeChild();
+  const supervisor = createRuntimeSupervisor({
+    appDataPath: 'C:\\private', runtimeEntry: 'C:\\app\\dist\\index.js', tokenFactory: () => 'private-token-123456',
+    spawn() {
+      queueMicrotask(() => child.stdout.emit('data', Buffer.from('{"type":"runtime-ready","url":"http://127.0.0.1:48999/mcp"}\n')));
+      return child;
+    },
+  });
+
+  await supervisor.start({ id: 'one', workspaceRoot: 'C:\\workspace', skillsRoot: 'C:\\workspace\\.codex\\skills' }, 'C:\\private\\one.json');
+
+  assert.equal(supervisor.getActiveRuntimeUrl(), 'http://127.0.0.1:48999/mcp');
+  assert.equal(JSON.stringify(supervisor.status()).includes('48999'), false);
+  await supervisor.stop();
+});
+
 test('never emits token fragments split across chunks and ignores stream data after exit', async () => {
   const child = fakeChild();
   const supervisor = createRuntimeSupervisor({

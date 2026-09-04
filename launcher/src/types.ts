@@ -2,6 +2,11 @@ export interface LauncherSnapshot {
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
   workspace: string | null;
   message?: string;
+  tunnelState?: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+  tunnelConfigured?: boolean;
+  paired?: boolean;
+  connectorName?: string;
+  tunnelMessage?: string;
 }
 
 export interface DiagnosticReport {
@@ -37,6 +42,12 @@ export interface McpRegistryDraft {
   servers: McpServerDraft[];
 }
 
+/** One-way setup input. Runtime keys never appear in a snapshot or callback. */
+export interface TunnelSetup {
+  tunnelId: string;
+  runtimeKey: string;
+}
+
 export interface GptWebCodexApi {
   snapshot(): Promise<LauncherSnapshot>;
   start(): Promise<LauncherSnapshot>;
@@ -49,6 +60,7 @@ export interface GptWebCodexApi {
   saveSkills(skillIds: string[]): Promise<LauncherSnapshot>;
   openSkillFolder(skillId: string): Promise<void>;
   saveMcpRegistry(draft: McpRegistryDraft): Promise<LauncherSnapshot>;
+  setupTunnel(setup: TunnelSetup): Promise<LauncherSnapshot>;
   cancelTask(taskId: string): Promise<LauncherSnapshot>;
   doctor(): Promise<DiagnosticReport>;
   openLogs(): Promise<void>;

@@ -49,6 +49,11 @@ function createRuntimeSupervisor(options) {
     });
   }
 
+  /** Main-process-only handoff for the Tunnel supervisor; never use in IPC. */
+  function getActiveRuntimeUrl() {
+    return state === 'running' && typeof active?.url === 'string' ? active.url : undefined;
+  }
+
   function appendLog(entry, token = currentToken) {
     const source = typeof entry === 'string' ? entry : 'Invalid runtime activity entry';
     const safe = redactAndBound(redactRuntimeToken(source, token), maxLogBytes);
@@ -241,7 +246,7 @@ function createRuntimeSupervisor(options) {
     return () => logListeners.delete(listener);
   }
 
-  return Object.freeze({ call, restart, start, status, stop, subscribeLogs });
+  return Object.freeze({ call, getActiveRuntimeUrl, restart, start, status, stop, subscribeLogs });
 }
 
 function validateStart(profile, mcpRegistryPath) {

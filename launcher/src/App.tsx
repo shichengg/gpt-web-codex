@@ -51,6 +51,11 @@ export default function App() {
     }
   }
 
+  async function setupTunnel(setup: { tunnelId: string; runtimeKey: string }) {
+    setError(undefined);
+    setSnapshot(await window.gptWebCodex.setupTunnel(setup));
+  }
+
   return (
     <main className="launcher-shell">
       <aside aria-label="Launcher views" className="sidebar">
@@ -69,7 +74,7 @@ export default function App() {
           </div>
           <span className={`status status-${snapshot.state}`}>{snapshot.state}</span>
         </header>
-        {view === 'Status' && <Status snapshot={snapshot} onInvoke={invoke} />}
+        {view === 'Status' && <Status snapshot={snapshot} onInvoke={invoke} onSetupTunnel={setupTunnel} />}
         {view === 'Workspace' && <Workspace profiles={profiles} onChanged={refreshWorkspaceData} />}
         {view === 'Skills' && <Skills profiles={profiles} skills={skills} onChanged={refreshWorkspaceData} />}
         {view === 'MCP' && <Mcp />}
@@ -163,18 +168,55 @@ function Skills({ profiles, skills, onChanged }: { profiles: WorkspaceProfile[];
   </section>;
 }
 
-function Status({ snapshot, onInvoke }: { snapshot: LauncherSnapshot; onInvoke: (action: 'start' | 'stop') => Promise<void> }) {
+function Status({
+  snapshot,
+  onInvoke,
+  onSetupTunnel,
+}: {
+  snapshot: LauncherSnapshot;
+  onInvoke: (action: 'start' | 'stop') => Promise<void>;
+  onSetupTunnel: (setup: { tunnelId: string; runtimeKey: string }) => Promise<void>;
+}) {
+  const [tunnelId, setTunnelId] = useState('');
+  const [runtimeKey, setRuntimeKey] = useState('');
+  const [message, setMessage] = useState<string>();
+
+  async function setupTunnel(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      setMessage(undefined);
+      await onSetupTunnel({ tunnelId: tunnelId.trim(), runtimeKey });
+      // The main process persists the private setup. Do not retain a copy in
+      // renderer state once IPC has accepted it.
+      setRuntimeKey('');
+      setMessage('Tunnel setup saved. Start the runtime to pair the connector.');
+    } catch {
+      setMessage('Unable to save tunnel setup. Check the Tunnel ID and runtime key.');
+    }
+  }
+
   return (
-    <section className="panel">
+    <section className="panel stack">
       <h2>Connection status</h2>
       <dl>
         <dt>Workspace</dt><dd>{snapshot.workspace ?? 'No workspace selected'}</dd>
         <dt>Runtime</dt><dd>{snapshot.message ?? 'Awaiting status'}</dd>
+        <dt>Tunnel</dt><dd>{snapshot.tunnelState ?? 'Not configured'}</dd>
+        <dt>Connector</dt><dd>{snapshot.connectorName ?? 'GPT Web Codex'} {snapshot.paired ? '(paired)' : '(not paired)'}</dd>
       </dl>
       <div className="actions">
         <button onClick={() => void onInvoke('start')} type="button">Start runtime</button>
         <button className="secondary" onClick={() => void onInvoke('stop')} type="button">Stop runtime</button>
       </div>
+      <form className="stack" onSubmit={(event) => void setupTunnel(event)}>
+        <h3>OpenAI Tunnel setup</h3>
+        <p>Enter the OpenAI Tunnel ID and runtime key once. The key is sent only to the main process, is not shown in status or logs, and is never saved with the workspace profile.</p>
+        <label>Tunnel ID<input autoComplete="off" onChange={(event) => setTunnelId(event.target.value)} required value={tunnelId} /></label>
+        <label>Runtime key<input autoComplete="off" onChange={(event) => setRuntimeKey(event.target.value)} required type="password" value={runtimeKey} /></label>
+        <div className="actions"><button type="submit">Save tunnel setup</button></div>
+      </form>
+      {snapshot.tunnelMessage && <p className="error" role="alert">{snapshot.tunnelMessage}</p>}
+      {message && <p>{message}</p>}
     </section>
   );
 }

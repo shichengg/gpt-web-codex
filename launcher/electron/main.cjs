@@ -6,7 +6,9 @@ const { createProfileStore, resolveProfileRoots, validateProfile } = require('./
 const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
 const { RuntimeClient, redactAndBound } = require('./runtime-client.cjs');
 const { createRuntimeSupervisor } = require('./runtime-supervisor.cjs');
+const { createConnectorIdentity, validateTunnelSetup } = require('./connector-identity.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
+const { createTunnelSupervisor, redactTunnelLog } = require('./tunnel-supervisor.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
 const rendererEntry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -14,6 +16,7 @@ const rendererEntryUrl = pathToFileURL(rendererEntry).href;
 const ALLOWED_EXTERNAL_ORIGINS = new Set(['https://platform.openai.com']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const TUNNEL_STATES = new Set(['stopped', 'starting', 'running', 'stopping', 'error']);
 
 const windowOptions = Object.freeze({
   width: 1180,
@@ -53,13 +56,22 @@ function createDefaultController() {
     listSkills: async () => [],
     openSkillFolder: async () => undefined,
     saveMcpRegistry: async () => snapshot,
+    setupTunnel: async () => snapshot,
     cancelTask: async () => snapshot,
     doctor: async () => ({ checks: [] }),
     openLogs: async () => undefined,
   });
 }
 
-async function createProfileController({ userDataPath, shell, runtimeSupervisor, runtimeClient, publishActivity }) {
+async function createProfileController({
+  userDataPath,
+  shell,
+  runtimeSupervisor,
+  runtimeClient,
+  publishActivity,
+  tunnelSupervisor,
+  connectorIdentity,
+}) {
   const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
   const base = createDefaultController();
   const registries = new Map();
@@ -68,6 +80,10 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
 
   if (runtimeSupervisor?.subscribeLogs && publishActivity) {
     runtimeSupervisor.subscribeLogs(publishActivity);
+  }
+  if (tunnelSupervisor && connectorIdentity?.credentials) {
+    const savedCredentials = connectorIdentity.credentials();
+    if (savedCredentials) await tunnelSupervisor.configure(savedCredentials);
   }
 
   function registryFor(profileId) {
@@ -98,7 +114,38 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       state: snapshot.state,
       workspace: snapshot.workspace ?? null,
       ...(snapshot.message ? { message: snapshot.message } : {}),
+      ...tunnelSnapshot(),
     };
+  }
+
+  function tunnelSnapshot() {
+    if (!tunnelSupervisor?.status) return {};
+    const tunnel = tunnelSupervisor.status();
+    const identity = connectorIdentity?.snapshot?.();
+    const state = TUNNEL_STATES.has(tunnel?.state) ? tunnel.state : 'error';
+    const connectorName = typeof identity?.connectorName === 'string'
+      ? identity.connectorName
+      : typeof tunnel?.connectorName === 'string'
+        ? tunnel.connectorName
+        : undefined;
+    return {
+      tunnelState: state,
+      tunnelConfigured: identity?.configured === true || tunnel?.configured === true,
+      paired: tunnel?.paired === true && state === 'running',
+      ...(connectorName ? { connectorName } : {}),
+      ...(typeof tunnel?.message === 'string' ? { tunnelMessage: redactTunnelLog(tunnel.message) } : {}),
+    };
+  }
+
+  async function restoreTunnelForActiveRuntime() {
+    if (!tunnelSupervisor || !connectorIdentity?.credentials || !connectorIdentity?.name) return;
+    const credentials = connectorIdentity.credentials();
+    if (!credentials) return;
+    const runtimeUrl = runtimeSupervisor?.getActiveRuntimeUrl?.();
+    if (typeof runtimeUrl !== 'string') {
+      throw new Error('The managed runtime did not provide a loopback URL for Tunnel pairing');
+    }
+    await tunnelSupervisor.restoreOrConnect({ runtimeUrl, connectorName: connectorIdentity.name() });
   }
 
   return Object.freeze({
@@ -113,9 +160,12 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       // then persist the canonical form that the child will load.
       await registry.save(await validateRegistryForProfile(await registry.load(), active));
       await runtimeSupervisor.start(active, registryPathFor(active.id));
+      await restoreTunnelForActiveRuntime();
       return runtimeSnapshot();
     }),
     stop: () => serializeRuntimeOperation(async () => {
+      // The public route is withdrawn before the local process can exit.
+      await tunnelSupervisor?.stop?.();
       await runtimeSupervisor?.stop?.();
       return runtimeSnapshot();
     }),
@@ -132,6 +182,7 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
     setActiveProfile: (id) => serializeRuntimeOperation(async () => {
       // One local child belongs to one profile. Stop before changing the
       // canonical roots that the next start can pass to the child.
+      await tunnelSupervisor?.stop?.();
       await runtimeSupervisor?.stop?.();
       return profiles.setActive(id);
     }),
@@ -157,7 +208,21 @@ async function createProfileController({ userDataPath, shell, runtimeSupervisor,
       // Save only a fully validated registry. A runtime reload is deliberately
       // sequenced after the atomic write so it can never run a rejected draft.
       await registryFor(active.id).save(await validateRegistryForProfile(draft, active));
+      await tunnelSupervisor?.stop?.();
       await runtimeSupervisor?.restart?.(active, registryPathFor(active.id));
+      await restoreTunnelForActiveRuntime();
+      return runtimeSnapshot();
+    }),
+    setupTunnel: (setup) => serializeRuntimeOperation(async () => {
+      if (!tunnelSupervisor || !connectorIdentity?.configure || !connectorIdentity?.credentials) {
+        throw new Error('OpenAI Tunnel setup is unavailable');
+      }
+      await connectorIdentity.configure(setup);
+      const credentials = connectorIdentity.credentials();
+      // The private credential object goes only from identity storage to the
+      // main-process supervisor. The result below is a redacted snapshot.
+      await tunnelSupervisor.configure(credentials);
+      await restoreTunnelForActiveRuntime();
       return runtimeSnapshot();
     }),
     cancelTask: async (taskId) => {
@@ -216,6 +281,14 @@ function validateProfileId(profileId) {
 
 const validateMcpRegistryDraft = validateRegistryDraft;
 
+function validateTunnelSetupDraft(setup) {
+  const validated = validateTunnelSetup(setup);
+  return Object.freeze({
+    tunnelId: validated.tunnelId,
+    runtimeKey: validated.runtimeKey,
+  });
+}
+
 function validateTaskId(taskId) {
   if (typeof taskId !== 'string' || !IDENTIFIER.test(taskId)) {
     throw new TypeError('task ID must be a bounded identifier');
@@ -255,6 +328,10 @@ function registerIpcHandlers(ipcMain, controller = createDefaultController(), ge
       if (args.length !== 1) throw new TypeError('saveMcpRegistry requires one payload');
       return controller.saveMcpRegistry(validateMcpRegistryDraft(args[0]));
     }),
+    'launcher:setup-tunnel': guarded((args) => {
+      if (args.length !== 1) throw new TypeError('setupTunnel requires one payload');
+      return controller.setupTunnel(validateTunnelSetupDraft(args[0]));
+    }),
     'launcher:cancel-task': guarded((args) => {
       if (args.length !== 1) throw new TypeError('cancelTask requires one payload');
       return controller.cancelTask(validateTaskId(args[0]));
@@ -286,8 +363,9 @@ function createMainWindow(electron) {
 }
 
 /** Quit only after the owned child confirms it has stopped. */
-async function stopRuntimeBeforeQuit(runtimeSupervisor, quit) {
+async function stopRuntimeBeforeQuit(runtimeSupervisor, quit, tunnelSupervisor) {
   try {
+    await tunnelSupervisor?.stop?.();
     await runtimeSupervisor?.stop?.();
     quit();
     return true;
@@ -303,12 +381,19 @@ function boot() {
   const { app, ipcMain } = electron;
   let mainWindow;
   let runtimeSupervisor;
+  let tunnelSupervisor;
   app.whenReady().then(async () => {
     mainWindow = createMainWindow(electron);
     const userDataPath = app.getPath('userData');
     runtimeSupervisor = createRuntimeSupervisor({
       appDataPath: userDataPath,
       runtimeEntry: path.join(__dirname, '..', '..', 'dist', 'index.js'),
+    });
+    const connectorIdentity = await createConnectorIdentity(path.join(userDataPath, 'connector.json'));
+    const tunnelAdapter = createUnavailableTunnelAdapter();
+    tunnelSupervisor = createTunnelSupervisor({
+      getActiveRuntimeUrl: () => runtimeSupervisor?.getActiveRuntimeUrl?.(),
+      ...tunnelAdapter,
     });
     const runtimeClient = new RuntimeClient(runtimeSupervisor);
     const publishActivity = createActivityPublisher(() => mainWindow?.webContents);
@@ -318,6 +403,8 @@ function boot() {
       runtimeSupervisor,
       runtimeClient,
       publishActivity,
+      tunnelSupervisor,
+      connectorIdentity,
     });
     registerIpcHandlers(ipcMain, controller, () => mainWindow?.webContents);
     app.on('activate', () => {
@@ -330,8 +417,22 @@ function boot() {
     if (process.platform !== 'darwin') {
       // Keep process ownership local: wait for the owned core to stop before
       // quitting Electron so no runtime survives the launcher window.
-      void stopRuntimeBeforeQuit(runtimeSupervisor, () => app.quit());
+      void stopRuntimeBeforeQuit(runtimeSupervisor, () => app.quit(), tunnelSupervisor);
     }
+  });
+}
+
+/**
+ * Task 6 owns the strict runner boundary. A packaged OpenAI Tunnel adapter is
+ * deliberately not guessed here because this repository has no client binary
+ * or SDK; packaging can supply a verified adapter without widening renderer
+ * authority or changing the lifecycle contract.
+ */
+function createUnavailableTunnelAdapter() {
+  return Object.freeze({
+    runTunnel: async () => { throw new Error('OpenAI Tunnel runner is unavailable in this launcher build'); },
+    checkHealth: async () => false,
+    stopTunnel: async () => undefined,
   });
 }
 
@@ -349,6 +450,7 @@ module.exports = {
   rendererEntryUrl,
   registerIpcHandlers,
   validateMcpRegistryDraft,
+  validateTunnelSetupDraft,
   validateProfileId,
   validateSkillIds,
   validateWorkspaceProfileDraft,

@@ -29,6 +29,7 @@ test('preload exposes only declared launcher methods', () => {
     'saveSkills',
     'openSkillFolder',
     'saveMcpRegistry',
+    'setupTunnel',
     'cancelTask',
     'doctor',
     'openLogs',
@@ -54,6 +55,24 @@ test('preload subscriptions remove their own listener', () => {
   unsubscribe();
 
   assert.equal(listeners.size, 0);
+});
+
+test('preload forwards tunnel setup only through its dedicated IPC channel', async () => {
+  const calls = [];
+  const api = createPreloadApi({
+    invoke: (...args) => { calls.push(args); return Promise.resolve({ tunnelConfigured: true }); },
+    on() {},
+    removeListener() {},
+  });
+  const credentials = {
+    tunnelId: `tunnel_${'a'.repeat(32)}`,
+    runtimeKey: 'runtime-key-which-must-remain-private',
+  };
+
+  const result = await api.setupTunnel(credentials);
+
+  assert.deepEqual(calls, [['launcher:setup-tunnel', credentials]]);
+  assert.deepEqual(result, { tunnelConfigured: true });
 });
 
 test('sandboxed preload exposes the bridge while require.main is unavailable', () => {
@@ -83,6 +102,6 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
   assert.deepEqual(Object.keys(calls[0][1]), [
     'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
     'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
-    'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
+    'setupTunnel', 'cancelTask', 'doctor', 'openLogs', 'onSnapshot', 'onLog',
   ]);
 });
