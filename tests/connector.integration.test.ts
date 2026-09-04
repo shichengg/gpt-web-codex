@@ -80,6 +80,7 @@ describe('authenticated connector', () => {
     try {
       expect(await server.call('no_such_tool', {}, auth)).toMatchObject({ error: { code: 'unknown_tool' } });
       expect(await server.call('read_file', { relativePath: 1 }, auth)).toMatchObject({ error: { code: 'validation_error' } });
+      expect(await server.call('call_mcp_tool', { serverId: 'lint', tool: 'check', input: [] }, auth)).toMatchObject({ error: { code: 'validation_error' } });
     } finally {
       await server.close();
     }
