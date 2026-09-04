@@ -9,13 +9,51 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.cjs",
-    "start": "electron ."
+    "start": "electron .",
+    "package:win": "node scripts/package.cjs",
+    "smoke:package": "node scripts/smoke-package.cjs"
+  },
+  "build": {
+    "appId": "com.openai.gpt-web-codex",
+    "productName": "GPT Web Codex",
+    "asar": true,
+    "forceCodeSigning": false,
+    "directories": {
+      "output": "artifacts"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/*.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".package/core",
+        "to": "core",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "signExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "perMachine": false,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "devDependencies": {
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",
     "electron": "^37.3.1",
+    "electron-builder": "^26.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "typescript": "^5.9.2",

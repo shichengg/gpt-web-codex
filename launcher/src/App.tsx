@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { LauncherSnapshot, McpRegistryDraft, McpServerDraft, SkillSummary, WorkspaceProfile } from './types';
+import type { DiagnosticReport, LauncherSnapshot, McpRegistryDraft, McpServerDraft, SkillSummary, WorkspaceProfile } from './types';
 
 const views = ['Status', 'Workspace', 'Skills', 'MCP', 'Tasks & Logs', 'Settings & Diagnostics'] as const;
 type View = (typeof views)[number];
@@ -79,7 +79,7 @@ export default function App() {
         {view === 'Skills' && <Skills profiles={profiles} skills={skills} onChanged={refreshWorkspaceData} />}
         {view === 'MCP' && <Mcp />}
         {view === 'Tasks & Logs' && <TasksAndLogs />}
-        {view === 'Settings & Diagnostics' && <Placeholder view="Settings & Diagnostics" />}
+        {view === 'Settings & Diagnostics' && <Diagnostics />}
         {error && <p className="error" role="alert">{error}</p>}
       </section>
     </main>
@@ -329,9 +329,40 @@ function rendererSafeText(value: unknown): string {
   return redacted.length <= 4096 ? redacted : `${redacted.slice(0, 4095)}…`;
 }
 
-function Placeholder({ view }: { view: 'Settings & Diagnostics' }) {
-  const descriptions: Record<'Settings & Diagnostics', string> = {
-    'Settings & Diagnostics': 'Run local checks and export redacted diagnostics.',
-  };
-  return <section className="panel"><p>{descriptions[view]}</p></section>;
+function Diagnostics() {
+  const [report, setReport] = useState<DiagnosticReport>();
+  const [message, setMessage] = useState<string>();
+
+  async function runDoctor() {
+    try {
+      setMessage(undefined);
+      setReport(await window.gptWebCodex.doctor());
+    } catch {
+      setMessage('Unable to run local diagnostics.');
+    }
+  }
+
+  async function openLogs() {
+    try {
+      setMessage(undefined);
+      await window.gptWebCodex.openLogs();
+      setMessage('Opened the local diagnostic log folder.');
+    } catch {
+      setMessage('Unable to open the local diagnostic log folder.');
+    }
+  }
+
+  return <section className="panel stack">
+    <h2>Settings and diagnostics</h2>
+    <p>Checks report local prerequisites and fixed status only. Credentials, tokens, and runtime keys are never exported.</p>
+    <div className="actions">
+      <button onClick={() => void runDoctor()} type="button">Run diagnostics</button>
+      <button className="secondary" onClick={() => void openLogs()} type="button">Open local logs</button>
+    </div>
+    {report && <ul className="plain-list">{report.checks.map((check) => <li key={check.id}>
+      <strong>{check.id}</strong> <span className={`status status-${check.status === 'error' ? 'error' : check.status === 'warning' ? 'stopping' : 'running'}`}>{check.status}</span>
+      <span>{check.message}</span>
+    </li>)}</ul>}
+    {message && <p>{message}</p>}
+  </section>;
 }

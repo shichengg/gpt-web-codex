@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
 const { createProfileStore, resolveProfileRoots, validateProfile } = require('./profiles.cjs');
 const { createRegistryStore, validateRegistryDraft, validateRegistryForProfile } = require('./registry.cjs');
@@ -9,6 +10,7 @@ const { createRuntimeSupervisor } = require('./runtime-supervisor.cjs');
 const { createConnectorIdentity, validateTunnelSetup } = require('./connector-identity.cjs');
 const { openSkillFolder, saveSkillDefaults, scanSkills } = require('./skills.cjs');
 const { createTunnelSupervisor, redactTunnelLog } = require('./tunnel-supervisor.cjs');
+const { doctor: runDoctor, openDiagnosticLogs } = require('./doctor.cjs');
 
 const preload = path.join(__dirname, 'preload.cjs');
 const rendererEntry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -59,7 +61,7 @@ function createDefaultController() {
     saveMcpRegistry: async () => snapshot,
     setupTunnel: async () => snapshot,
     cancelTask: async () => snapshot,
-    doctor: async () => ({ checks: [] }),
+    doctor: () => runDoctor(),
     openLogs: async () => undefined,
   });
 }
@@ -73,6 +75,9 @@ async function createProfileController({
   publishSnapshot,
   tunnelSupervisor,
   connectorIdentity,
+  coreAssetsAvailable,
+  tunnelAvailable = false,
+  diagnosticLogDirectory,
 }) {
   const profiles = await createProfileStore(path.join(userDataPath, 'profiles.json'));
   const base = createDefaultController();
@@ -311,7 +316,27 @@ async function createProfileController({
       await client.cancel(taskId);
       return runtimeSnapshot();
     },
+    doctor: async () => runDoctor({
+      runtimeStatus: () => runtimeSupervisor?.status?.(),
+      getActiveProfile: () => profiles.getActive(),
+      tunnelStatus: () => tunnelSupervisor?.status?.(),
+      connectorSnapshot: () => connectorIdentity?.snapshot?.(),
+      tunnelAvailable,
+      coreAssetsAvailable: await resolveCoreAssetsAvailable(coreAssetsAvailable),
+    }),
+    openLogs: () => openDiagnosticLogs(diagnosticLogDirectory ?? path.join(userDataPath, 'logs'), shell),
   });
+}
+
+async function resolveCoreAssetsAvailable(value) {
+  if (typeof value === 'function') {
+    try {
+      return await value();
+    } catch {
+      return false;
+    }
+  }
+  return value;
 }
 
 /** Redact and byte-bound runtime activity before it can cross Electron IPC. */
@@ -524,15 +549,20 @@ function installQuitGuard(app, getRuntimeSupervisor, getTunnelSupervisor) {
 function boot() {
   const electron = require('electron');
   const { app, ipcMain } = electron;
+  if (process.argv.includes('--smoke-diagnostics')) {
+    bootDiagnosticMode(electron);
+    return;
+  }
   let mainWindow;
   let runtimeSupervisor;
   let tunnelSupervisor;
   app.whenReady().then(async () => {
     mainWindow = createMainWindow(electron);
     const userDataPath = app.getPath('userData');
+    const runtimeEntry = runtimeEntryForApp(app);
     runtimeSupervisor = createRuntimeSupervisor({
       appDataPath: userDataPath,
-      runtimeEntry: path.join(__dirname, '..', '..', 'dist', 'index.js'),
+      runtimeEntry,
     });
     const connectorIdentity = await createConnectorIdentity(path.join(userDataPath, 'connector.json'));
     const tunnelAdapter = createUnavailableTunnelAdapter();
@@ -552,6 +582,8 @@ function boot() {
       publishSnapshot,
       tunnelSupervisor,
       connectorIdentity,
+      coreAssetsAvailable: () => isReadableFile(runtimeEntry),
+      diagnosticLogDirectory: path.join(userDataPath, 'logs'),
     });
     registerIpcHandlers(ipcMain, controller, () => mainWindow?.webContents);
     app.on('activate', () => {
@@ -567,6 +599,30 @@ function boot() {
       app.quit();
     }
   });
+}
+
+function runtimeEntryForApp(app) {
+  return app?.isPackaged === true
+    ? path.join(process.resourcesPath, 'core', 'index.js')
+    : path.join(__dirname, '..', '..', 'dist', 'index.js');
+}
+
+async function isReadableFile(filePath) {
+  const stat = await fs.stat(filePath).catch(() => undefined);
+  return stat?.isFile() === true;
+}
+
+function bootDiagnosticMode(electron) {
+  const { app } = electron;
+  app.whenReady().then(async () => {
+    const report = await runDoctor({
+      coreAssetsAvailable: await isReadableFile(runtimeEntryForApp(app)),
+      tunnelAvailable: false,
+    });
+    // The smoke harness receives only this fixed-shape, redaction-safe report.
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    app.exit(0);
+  }).catch(() => app.exit(1));
 }
 
 /**
@@ -594,9 +650,11 @@ module.exports = {
   createMainWindow,
   createProfileController,
   createSnapshotPublisher,
+  bootDiagnosticMode,
   installQuitGuard,
   isAllowedExternalUrl,
   rendererEntryUrl,
+  runtimeEntryForApp,
   registerIpcHandlers,
   validateMcpRegistryDraft,
   validateTunnelSetupDraft,

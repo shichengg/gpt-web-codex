@@ -114,6 +114,30 @@ proxy-style arguments. Put an approved local server at a path such as
 `C:\workspace\.codex\mcp\repo-linter.cjs`. The core runtime repeats this
 trusted-workspace validation when it loads a mutable non-empty registry.
 
+## Windows desktop package
+
+The Electron launcher can create a per-user NSIS installer after the core and
+launcher have been built:
+
+```powershell
+npm run build
+npm --prefix launcher run package:win
+npm --prefix launcher run smoke:package
+```
+
+The installer is written to `launcher/artifacts/`. It uses an ASAR archive and
+stages only the audited production connector runtime, Electron main/preload
+files, and renderer assets. Publishing and automatic signing discovery are
+disabled; signing is an explicit release operation outside this repository.
+
+The **Settings & Diagnostics** view checks Codex, the managed runtime, active
+profile, connector identity, and Tunnel availability, and can open the local
+diagnostic-log folder. Its records contain fixed, redacted status messages.
+
+This MVP does not package an OpenAI Tunnel client. The Task 6 adapter remains
+unavailable until a compatible client and its command contract are explicitly
+provisioned and verified.
+
 ## Connector tools and task states
 
 The connector provides workspace metadata, bounded directory/file reads,
