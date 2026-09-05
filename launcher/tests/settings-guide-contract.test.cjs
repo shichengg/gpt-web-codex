@@ -76,6 +76,12 @@ test('guide state keeps an ordinary Tunnel error actionable', () => {
   assert.equal(guide[2].status, 'needs-action');
 });
 
+test('guide step 4 is complete only after the dedicated ChatGPT window was opened', () => {
+  const base = { snapshot: { state: 'stopped', paired: false }, profiles: [{ id: 'work' }], skills: ['review'], mcpRegistry: { servers: [] }, doctor: { checks: [] } };
+  assert.equal(guideStateFrom(base)[3].status, 'needs-action');
+  assert.equal(guideStateFrom({ ...base, snapshot: { ...base.snapshot, chatGptOpened: true } })[3].status, 'complete');
+});
+
 test('preferences IPC validates a full payload before routing it', async () => {
   const handlers = new Map();
   const sender = { getURL: () => rendererEntryUrl };
@@ -114,6 +120,16 @@ test('renderer translates internal guide message keys instead of displaying them
   assert.match(appSource, /guide\.profile\.required/);
   assert.match(appSource, /guide\.runtime\.ready/);
   assert.doesNotMatch(appSource, /:\s*step\.messageKey/);
+});
+
+test('renderer maps runtime and diagnostic statuses through the localization dictionary', async () => {
+  const appSource = await fs.readFile(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8');
+
+  assert.match(appSource, /runtimeStateLabels/);
+  assert.match(appSource, /diagnosticStatusLabels/);
+  assert.match(appSource, /diagnosticMessageKeys/);
+  assert.doesNotMatch(appSource, /<span className=\{`status status-\$\{snapshot\.state\}`\}>\s*\{snapshot\.state\}/);
+  assert.doesNotMatch(appSource, /<span>\{check\.message\}<\/span>/);
 });
 
 test('launcher responsive layout activates at the Electron minimum width', async () => {

@@ -5,6 +5,7 @@ export interface LauncherSnapshot {
   tunnelState?: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
   tunnelConfigured?: boolean;
   paired?: boolean;
+  chatGptOpened?: boolean;
   connectorName?: string;
   tunnelMessage?: string;
   /** Always present, renderer-safe UI configuration persisted by the launcher. */

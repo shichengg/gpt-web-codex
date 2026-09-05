@@ -84,6 +84,26 @@ test('blocks untrusted navigation, permission, download and popup targets', asyn
   assert.equal(downloadPrevented, true);
 });
 
+test('blocks untrusted server redirects and replays allowed redirects through the guard', async () => {
+  const { BrowserWindow, session } = createDoubles();
+  const controller = createChatGptWindowController({ BrowserWindow, session, logger: {} });
+  await controller.open();
+  const window = BrowserWindow.last;
+  let prevented = false;
+  window.webContents.events['will-redirect'](
+    { preventDefault: () => { prevented = true; } },
+    'https://evil.example/redirect',
+  );
+  assert.equal(prevented, true);
+  assert.deepEqual(window.webContents.loadCalls, []);
+
+  window.webContents.events['will-redirect'](
+    { preventDefault: () => { prevented = true; } },
+    'https://chatgpt.com/auth/callback',
+  );
+  assert.deepEqual(window.webContents.loadCalls, ['https://chatgpt.com/auth/callback']);
+});
+
 test('denies allowed popup targets so they cannot navigate without guards', async () => {
   const { BrowserWindow, session } = createDoubles();
   const controller = createChatGptWindowController({ BrowserWindow, session, logger: {} });
@@ -130,4 +150,14 @@ test('clears only the dedicated ChatGPT session', async () => {
   assert.deepEqual(session.clearStorageDataCalls[0].storages,
     ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage']);
   assert.equal(session.clearCacheCalls, 1);
+});
+
+test('retains session-lifetime opened state after the window is closed', async () => {
+  const { BrowserWindow, session } = createDoubles();
+  const controller = createChatGptWindowController({ BrowserWindow, session, logger: {} });
+  assert.deepEqual(controller.snapshot(), { open: false, opened: false });
+  await controller.open();
+  assert.deepEqual(controller.snapshot(), { open: true, opened: true });
+  BrowserWindow.last.close();
+  assert.deepEqual(controller.snapshot(), { open: false, opened: true });
 });

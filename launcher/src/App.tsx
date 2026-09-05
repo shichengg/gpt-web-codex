@@ -31,7 +31,6 @@ const defaultPreferences: LauncherUiPreferences = {
 const initialSnapshot: LauncherSnapshot = {
   state: "stopped",
   workspace: null,
-  message: "正在加载启动器状态…",
   preferences: defaultPreferences,
   guide: [],
 };
@@ -152,6 +151,8 @@ const dictionary = {
     guideTunnelRequired: "请启动运行时并配对兼容 Tunnel 客户端。",
     guideConnectorReady: "连接器已就绪。",
     guideConnectorRequired: "请先完成运行时和 Tunnel 配对。",
+    guideChatGptReady: "ChatGPT 窗口已打开。",
+    guideChatGptRequired: "请打开 ChatGPT 窗口。",
     guideRuntimeReady: "本地运行时正在运行且已配对。",
     guideRuntimeRequired: "请启动本地运行时并完成 Tunnel 配对。",
     tunnelUnavailable:
@@ -163,6 +164,38 @@ const dictionary = {
     diagnosticsError: "无法运行本地诊断。",
     logsOpened: "已打开本地诊断日志文件夹。",
     logsOpenError: "无法打开本地诊断日志文件夹。",
+    statusUnknown: "状态未知",
+    runtimeStateStopped: "已停止",
+    runtimeStateStarting: "正在启动",
+    runtimeStateRunning: "正在运行",
+    runtimeStateStopping: "正在停止",
+    runtimeStateError: "错误",
+    diagnosticOk: "正常",
+    diagnosticWarning: "警告",
+    diagnosticErrorStatus: "错误",
+    diagnosticCheckCodex: "Codex CLI",
+    diagnosticCheckRuntime: "本地运行时",
+    diagnosticCheckProfile: "工作区配置",
+    diagnosticCheckTunnel: "Tunnel",
+    diagnosticCheckConnector: "连接器",
+    diagnosticCodexMissing: "未找到 Codex CLI。",
+    diagnosticCodexReady: "Codex CLI 可用。",
+    diagnosticRuntimeAssetsMissing: "本地运行时文件不可用。",
+    diagnosticRuntimeError: "本地运行时报告错误。",
+    diagnosticRuntimeRunning: "本地运行时正在运行。",
+    diagnosticProfileMissing: "尚未配置工作区配置。",
+    diagnosticProfileReady: "工作区配置已就绪。",
+    diagnosticTunnelUnavailable: "此启动器未提供兼容的 Tunnel 客户端。",
+    diagnosticTunnelError: "兼容的 Tunnel 客户端报告错误。",
+    diagnosticTunnelPaired: "兼容的 Tunnel 客户端可用且已配对。",
+    diagnosticConnectorMissing: "连接器身份尚未配置。",
+    diagnosticConnectorReady: "连接器身份已配置。",
+    taskQueued: "排队中",
+    taskRunning: "运行中",
+    taskSucceeded: "已成功",
+    taskFailed: "失败",
+    taskTimedOut: "已超时",
+    taskCancelled: "已取消",
   },
   en: {
     home: "Home",
@@ -287,6 +320,8 @@ const dictionary = {
     guideTunnelRequired: "Start the runtime and pair a compatible Tunnel client.",
     guideConnectorReady: "Connector is ready.",
     guideConnectorRequired: "Complete runtime and Tunnel pairing first.",
+    guideChatGptReady: "The ChatGPT window has been opened.",
+    guideChatGptRequired: "Open the dedicated ChatGPT window.",
     guideRuntimeReady: "The local runtime is running and paired.",
     guideRuntimeRequired: "Start the local runtime and complete Tunnel pairing.",
     tunnelUnavailable:
@@ -298,6 +333,38 @@ const dictionary = {
     diagnosticsError: "Unable to run local diagnostics.",
     logsOpened: "Opened the local diagnostic log folder.",
     logsOpenError: "Unable to open the local diagnostic log folder.",
+    statusUnknown: "Unknown status",
+    runtimeStateStopped: "Stopped",
+    runtimeStateStarting: "Starting",
+    runtimeStateRunning: "Running",
+    runtimeStateStopping: "Stopping",
+    runtimeStateError: "Error",
+    diagnosticOk: "OK",
+    diagnosticWarning: "Warning",
+    diagnosticErrorStatus: "Error",
+    diagnosticCheckCodex: "Codex CLI",
+    diagnosticCheckRuntime: "Local runtime",
+    diagnosticCheckProfile: "Workspace profile",
+    diagnosticCheckTunnel: "Tunnel",
+    diagnosticCheckConnector: "Connector",
+    diagnosticCodexMissing: "Codex CLI was not found on PATH.",
+    diagnosticCodexReady: "Codex CLI is available.",
+    diagnosticRuntimeAssetsMissing: "Packaged core runtime assets are unavailable.",
+    diagnosticRuntimeError: "Managed local runtime reported an error.",
+    diagnosticRuntimeRunning: "Managed local runtime is running.",
+    diagnosticProfileMissing: "No active workspace profile is configured.",
+    diagnosticProfileReady: "An active workspace profile is configured.",
+    diagnosticTunnelUnavailable: "OpenAI Tunnel client is unavailable in this launcher build.",
+    diagnosticTunnelError: "OpenAI Tunnel client reported an error.",
+    diagnosticTunnelPaired: "OpenAI Tunnel client is available and paired.",
+    diagnosticConnectorMissing: "Connector identity is not configured.",
+    diagnosticConnectorReady: "Connector identity is configured.",
+    taskQueued: "Queued",
+    taskRunning: "Running",
+    taskSucceeded: "Succeeded",
+    taskFailed: "Failed",
+    taskTimedOut: "Timed out",
+    taskCancelled: "Cancelled",
   },
 } as const;
 
@@ -311,9 +378,65 @@ const guideMessageKeys: Record<string, TextKey> = {
   "guide.tunnel.required": "guideTunnelRequired",
   "guide.connector.ready": "guideConnectorReady",
   "guide.connector.required": "guideConnectorRequired",
+  "guide.chatgpt.ready": "guideChatGptReady",
+  "guide.chatgpt.required": "guideChatGptRequired",
   "guide.runtime.ready": "guideRuntimeReady",
   "guide.runtime.required": "guideRuntimeRequired",
 };
+
+const runtimeStateLabels: Record<string, TextKey> = {
+  stopped: "runtimeStateStopped",
+  starting: "runtimeStateStarting",
+  running: "runtimeStateRunning",
+  stopping: "runtimeStateStopping",
+  error: "runtimeStateError",
+};
+const diagnosticStatusLabels: Record<string, TextKey> = {
+  ok: "diagnosticOk",
+  warning: "diagnosticWarning",
+  error: "diagnosticErrorStatus",
+};
+const diagnosticCheckLabels: Record<string, TextKey> = {
+  codex: "diagnosticCheckCodex",
+  runtime: "diagnosticCheckRuntime",
+  profile: "diagnosticCheckProfile",
+  tunnel: "diagnosticCheckTunnel",
+  connector: "diagnosticCheckConnector",
+};
+const diagnosticMessageKeys: Record<string, TextKey> = {
+  "Codex CLI was not found on PATH.": "diagnosticCodexMissing",
+  "Codex CLI is available.": "diagnosticCodexReady",
+  "Packaged core runtime assets are unavailable.": "diagnosticRuntimeAssetsMissing",
+  "Managed local runtime reported an error.": "diagnosticRuntimeError",
+  "Managed local runtime is running.": "diagnosticRuntimeRunning",
+  "No active workspace profile is configured.": "diagnosticProfileMissing",
+  "An active workspace profile is configured.": "diagnosticProfileReady",
+  "OpenAI Tunnel client is unavailable in this launcher build.": "diagnosticTunnelUnavailable",
+  "OpenAI Tunnel client reported an error.": "diagnosticTunnelError",
+  "OpenAI Tunnel client is available and paired.": "diagnosticTunnelPaired",
+  "Connector identity is not configured.": "diagnosticConnectorMissing",
+  "Connector identity is configured.": "diagnosticConnectorReady",
+};
+const runtimeMessageKeys: Record<string, TextKey> = {
+  "Launcher is ready.": "awaitingStatus",
+  "Runtime process exited unexpectedly (code 7)": "diagnosticsError",
+  "Runtime process exited unexpectedly": "diagnosticsError",
+  "Runtime is not running": "runtimeStateStopped",
+};
+const taskStateLabels: Record<string, TextKey> = {
+  queued: "taskQueued",
+  running: "taskRunning",
+  succeeded: "taskSucceeded",
+  failed: "taskFailed",
+  timed_out: "taskTimedOut",
+  cancelled: "taskCancelled",
+};
+
+function localizedMessage(value: string | undefined, t: Translate): string {
+  if (!value) return t("statusUnknown");
+  const key = diagnosticMessageKeys[value] ?? runtimeMessageKeys[value];
+  return key ? t(key) : t("statusUnknown");
+}
 
 export default function App() {
   const [view, setView] = useState<View>("home");
@@ -398,7 +521,7 @@ export default function App() {
             <h1>{t(view)}</h1>
           </div>
           <span className={`status status-${snapshot.state}`}>
-            {snapshot.state}
+            {t(runtimeStateLabels[snapshot.state] ?? "statusUnknown")}
           </span>
         </header>
         {view === "home" && (
@@ -657,9 +780,9 @@ function Status({
         <dt>{t("workspaceLabel")}</dt>
         <dd>{snapshot.workspace ?? t("noWorkspace")}</dd>
         <dt>{t("runtime")}</dt>
-        <dd>{snapshot.message ?? t("awaitingStatus")}</dd>
+        <dd>{snapshot.message ? localizedMessage(snapshot.message, t) : t("awaitingStatus")}</dd>
         <dt>{t("tunnel")}</dt>
-        <dd>{snapshot.tunnelState ?? t("notConfigured")}</dd>
+        <dd>{snapshot.tunnelState ? t(runtimeStateLabels[snapshot.tunnelState] ?? "statusUnknown") : t("notConfigured")}</dd>
         <dt>{t("connector")}</dt>
         <dd>
           {snapshot.connectorName ?? "GPT Web Codex"} (
@@ -713,7 +836,7 @@ function Status({
       </form>
       {snapshot.tunnelMessage && (
         <p className="error" role="alert">
-          {snapshot.tunnelMessage}
+          {localizedMessage(snapshot.tunnelMessage, t)}
         </p>
       )}
       {message && <p>{message}</p>}
@@ -926,10 +1049,10 @@ function TasksAndLogs({ t }: { t: Translate }) {
         <article className="skill">
           <h3>{t("selectedTask")}</h3>
           <p>
-            <code>{task.id}</code> · {task.state}
+            <code>{task.id}</code> · {t(taskStateLabels[task.state] ?? "statusUnknown")}
           </p>
           {task.error && (
-            <p className="error">{rendererSafeText(task.error)}</p>
+            <p className="error">{localizedMessage(task.error, t)}</p>
           )}
           {task.output && <pre>{rendererSafeText(task.output)}</pre>}
           {task.outputTruncated && <p>{t("taskTruncated")}</p>}
@@ -1089,13 +1212,13 @@ function SettingsGuide({
           <ul className="plain-list">
             {report.checks.map((check) => (
               <li key={check.id}>
-                <strong>{check.id}</strong>
+                <strong>{t(diagnosticCheckLabels[check.id] ?? "statusUnknown")}</strong>
                 <span
                   className={`status status-${check.status === "error" ? "error" : check.status === "warning" ? "stopping" : "running"}`}
                 >
-                  {check.status}
+                  {t(diagnosticStatusLabels[check.status] ?? "statusUnknown")}
                 </span>
-                <span>{check.message}</span>
+                <span>{localizedMessage(check.message, t)}</span>
               </li>
             ))}
           </ul>

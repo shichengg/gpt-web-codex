@@ -79,6 +79,7 @@ async function createProfileController({
   publishSnapshot,
   tunnelSupervisor,
   connectorIdentity,
+  chatGptWindow,
   coreAssetsAvailable,
   tunnelAvailable = false,
   diagnosticLogDirectory,
@@ -144,6 +145,7 @@ async function createProfileController({
       workspace: snapshot.workspace ?? null,
       ...(snapshot.message ? { message: snapshot.message } : {}),
       ...tunnelSnapshot(),
+      ...(chatGptWindow ? { chatGptOpened: chatGptWindow.snapshot?.()?.opened === true } : {}),
     };
     const activeProfile = await profiles.getActive();
     const [savedProfiles, preferences, doctor, mcpRegistry] = await Promise.all([
@@ -363,6 +365,15 @@ async function createProfileController({
     }),
     preferences: () => launcherState.preferences.read(),
     savePreferences: (preferences) => launcherState.preferences.write(validatePreferences(preferences)),
+    openChatGpt: async () => {
+      if (!chatGptWindow?.open) throw new Error('ChatGPT window is unavailable');
+      await chatGptWindow.open();
+      return publishCurrentSnapshot();
+    },
+    clearChatGptSession: async () => {
+      if (!chatGptWindow?.clearSession) throw new Error('ChatGPT session is unavailable');
+      return chatGptWindow.clearSession();
+    },
     openLogs: () => openDiagnosticLogs(diagnosticLogDirectory ?? path.join(userDataPath, 'logs'), shell),
   });
 }
@@ -418,6 +429,7 @@ function sanitizeLauncherSnapshot(snapshot, maximumBytes) {
   if (TUNNEL_STATES.has(source.tunnelState)) safe.tunnelState = source.tunnelState;
   if (typeof source.tunnelConfigured === 'boolean') safe.tunnelConfigured = source.tunnelConfigured;
   if (typeof source.paired === 'boolean') safe.paired = source.paired;
+  if (typeof source.chatGptOpened === 'boolean') safe.chatGptOpened = source.chatGptOpened;
   if (typeof source.connectorName === 'string') safe.connectorName = redactTunnelLog(source.connectorName, maximumBytes);
   if (typeof source.tunnelMessage === 'string') safe.tunnelMessage = redactTunnelLog(source.tunnelMessage, maximumBytes);
   if (source.preferences) {
@@ -440,11 +452,12 @@ function guideStateFrom({ snapshot = {}, profiles = [], skills = [], mcpRegistry
   const hasSkillDefaults = Array.isArray(skills) && skills.length > 0;
   const hasMcpServers = Array.isArray(mcpRegistry?.servers) && mcpRegistry.servers.length > 0;
   const paired = snapshot.paired === true;
+  const chatGptOpened = snapshot.chatGptOpened === true;
   return [
     { id: 1, status: hasProfile ? 'complete' : 'needs-action', messageKey: hasProfile ? 'guide.profile.ready' : 'guide.profile.required' },
     { id: 2, status: hasSkillDefaults || hasMcpServers ? 'complete' : 'needs-action', messageKey: hasSkillDefaults || hasMcpServers ? 'guide.skills.ready' : 'guide.skills.required' },
     { id: 3, status: tunnelUnavailable ? 'unavailable' : (paired ? 'complete' : 'needs-action'), messageKey: tunnelUnavailable ? 'guide.tunnel.unavailable' : (paired ? 'guide.tunnel.paired' : 'guide.tunnel.required') },
-    { id: 4, status: paired ? 'complete' : 'needs-action', messageKey: paired ? 'guide.connector.ready' : 'guide.connector.required' },
+    { id: 4, status: chatGptOpened ? 'complete' : 'needs-action', messageKey: chatGptOpened ? 'guide.chatgpt.ready' : 'guide.chatgpt.required' },
     { id: 5, status: snapshot.state === 'running' && paired ? 'complete' : 'needs-action', messageKey: snapshot.state === 'running' && paired ? 'guide.runtime.ready' : 'guide.runtime.required' },
   ].map((step) => Object.freeze(step));
 }
@@ -672,13 +685,14 @@ function boot() {
       publishSnapshot,
       tunnelSupervisor,
       connectorIdentity,
+      chatGptWindow,
       coreAssetsAvailable: () => isReadableFile(runtimeEntry),
       diagnosticLogDirectory: path.join(userDataPath, 'logs'),
     });
     registerIpcHandlers(ipcMain, {
       ...controller,
-      openChatGpt: () => chatGptWindow.open(),
-      clearChatGptSession: () => chatGptWindow.clearSession(),
+      openChatGpt: (...args) => controller.openChatGpt(...args),
+      clearChatGptSession: (...args) => controller.clearChatGptSession(...args),
     }, () => mainWindow?.webContents);
     app.on('activate', () => {
       if (electron.BrowserWindow.getAllWindows().length === 0) {

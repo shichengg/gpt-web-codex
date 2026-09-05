@@ -32,12 +32,14 @@ function isAllowedChatGptUrl(value) {
 
 function installChatGptGuards(chatWindow, chatSession, logger = {}) {
   const webContents = chatWindow.webContents;
-  webContents.on('will-navigate', (event, url) => {
+  const guardNavigation = (event, url) => {
     event.preventDefault();
     if (!isAllowedChatGptUrl(url)) return;
     Promise.resolve(webContents.loadURL(url))
-      .catch(() => undefined)
-  });
+      .catch(() => undefined);
+  };
+  webContents.on('will-navigate', guardNavigation);
+  webContents.on('will-redirect', guardNavigation);
   webContents.setWindowOpenHandler(({ url }) => {
     // OAuth and ChatGPT navigation are supported in the same top-level
     // window. Denying popups avoids creating an unguarded child window.
@@ -59,6 +61,7 @@ function createChatGptWindowController({ BrowserWindow, session, logger = {} }) 
     throw new TypeError('ChatGPT window controller requires BrowserWindow and session');
   }
   let chatWindow = null;
+  let opened = false;
   const chatSession = session.fromPartition(CHATGPT_PARTITION);
 
   function open() {
@@ -81,7 +84,10 @@ function createChatGptWindowController({ BrowserWindow, session, logger = {} }) 
     });
     installChatGptGuards(chatWindow, chatSession, logger);
     chatWindow.on('closed', () => { chatWindow = null; });
-    return chatWindow.loadURL(CHATGPT_HOME).then(() => ({ open: true }));
+    return chatWindow.loadURL(CHATGPT_HOME).then(() => {
+      opened = true;
+      return { open: true };
+    });
   }
 
   async function clearSession() {
@@ -95,7 +101,10 @@ function createChatGptWindowController({ BrowserWindow, session, logger = {} }) 
     open,
     clearSession,
     close: () => chatWindow?.close(),
-    snapshot: () => ({ open: Boolean(chatWindow && !chatWindow.isDestroyed()) }),
+    snapshot: () => ({
+      open: Boolean(chatWindow && !chatWindow.isDestroyed()),
+      opened,
+    }),
   });
 }
 
