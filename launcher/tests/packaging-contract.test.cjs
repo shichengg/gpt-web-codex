@@ -5,12 +5,17 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const asar = require('@electron/asar');
 
 const packageJson = require('../package.json');
 const { AUDITED_CORE_FILES, prepareCore } = require('../scripts/prepare-core.cjs');
 const { Arch, Platform } = require('electron-builder');
 const { PACKAGE_BUILD_OPTIONS, windowsTargets } = require('../scripts/package.cjs');
-const { assertPackagedCoreAssets, resolvePackagedExecutable } = require('../scripts/smoke-package.cjs');
+const {
+  assertPackagedChatGptWindowController,
+  assertPackagedCoreAssets,
+  resolvePackagedExecutable,
+} = require('../scripts/smoke-package.cjs');
 const { verifyCoreRuntimeLoadability } = require('../electron/main.cjs');
 
 test('Windows package targets a per-user NSIS installer and audited core resources', () => {
@@ -28,6 +33,31 @@ test('Windows package targets a per-user NSIS installer and audited core resourc
   ]);
   assert.equal(packageJson.scripts['package:win'], 'node scripts/package.cjs');
   assert.equal(packageJson.scripts['smoke:package'], 'node scripts/smoke-package.cjs');
+});
+
+test('package keeps the ChatGPT window controller in ASAR and documents session isolation', async () => {
+  const launcherDirectory = path.join(__dirname, '..');
+  const repositoryDirectory = path.join(launcherDirectory, '..');
+  const readme = await fs.readFile(path.join(repositoryDirectory, 'README.md'), 'utf8');
+  const packagedFiles = packageJson.build.files;
+  const packageConfig = JSON.stringify(packageJson.build);
+
+  assert.equal(
+    packagedFiles.some((pattern) => pattern === 'electron/*.cjs'),
+    true,
+    'The ASAR input must include electron/chatgpt-window.cjs.',
+  );
+  await fs.access(path.join(launcherDirectory, 'electron', 'chatgpt-window.cjs'));
+  assert.equal(
+    packageConfig.includes('chatgpt-session') || packageConfig.includes('chatgpt-session-data'),
+    false,
+    'ChatGPT session storage must never be an extra packaged resource.',
+  );
+  assert.match(readme, /独立 ChatGPT 窗口/);
+  assert.match(readme, /清除 ChatGPT 登录状态/);
+  assert.match(readme, /不读取、显示、导出.*Cookie/);
+  assert.match(readme, /兼容 Tunnel 客户端/);
+  assert.match(packageConfig, /asar/);
 });
 
 test('package command passes NSIS and x64 in electron-builder API order', () => {
@@ -99,6 +129,28 @@ test('smoke package check requires the audited core entrypoint and runtime depen
   await assertPackagedCoreAssets(path.join(artifacts, 'win-unpacked'));
   await fs.rm(path.join(core, 'node_modules', 'zod'), { recursive: true, force: true });
   await assert.rejects(() => assertPackagedCoreAssets(path.join(artifacts, 'win-unpacked')), /runtime dependency/i);
+});
+
+test('smoke package check requires the ChatGPT window controller in the packaged ASAR', async (t) => {
+  const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-chatgpt-asar-'));
+  t.after(() => fs.rm(artifacts, { recursive: true, force: true }));
+  const source = path.join(artifacts, 'source');
+  const appAsar = path.join(artifacts, 'win-unpacked', 'resources', 'app.asar');
+  await fs.mkdir(path.join(source, 'electron'), { recursive: true });
+  await fs.writeFile(path.join(source, 'electron', 'chatgpt-window.cjs'), 'module.exports = {};');
+  await fs.mkdir(path.dirname(appAsar), { recursive: true });
+  await asar.createPackage(source, appAsar);
+
+  await assertPackagedChatGptWindowController(path.join(artifacts, 'win-unpacked'));
+  await fs.rm(path.join(source, 'electron', 'chatgpt-window.cjs'));
+  const emptyAppOut = path.join(artifacts, 'empty-app', 'resources');
+  const emptyAsar = path.join(emptyAppOut, 'app.asar');
+  await fs.mkdir(emptyAppOut, { recursive: true });
+  await asar.createPackage(source, emptyAsar);
+  await assert.rejects(
+    () => assertPackagedChatGptWindowController(path.join(artifacts, 'empty-app')),
+    /ChatGPT window controller/i,
+  );
 });
 
 test('diagnostic core probe runs the packaged core without NODE_PATH fallback', async () => {

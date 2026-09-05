@@ -147,6 +147,20 @@ This MVP does not package an OpenAI Tunnel client. The Task 6 adapter remains
 unavailable until a compatible client and its command contract are explicitly
 provisioned and verified.
 
+### 中文桌面端首次使用
+
+安装完成后，在桌面端按以下顺序完成首次配置：
+
+1. 选择本地工作区。
+2. 配置该工作区允许使用的 Skills 和 MCP 服务器。
+3. 在“设置与诊断”的引导中检查 Tunnel 状态。只有发现并验证兼容 Tunnel 客户端后，才能继续配对；当前未发现兼容 Tunnel 客户端时，应用不会假装已经配对，必须由用户提供已验证客户端。
+4. 从主控制台打开独立 ChatGPT 窗口并在其中登录 ChatGPT。
+5. 使用已验证的连接器添加流程添加连接器，然后验证工作区、Skills 和 MCP 配置。
+
+独立 ChatGPT 窗口使用 Electron 专用 session 持久化登录状态。主控制台和 MCP 不读取、显示、导出 ChatGPT Cookie，也不会访问该 session 存储目录。选择“清除 ChatGPT 登录状态”会移除这个专用 session 中的 Cookie 和相关站点数据；这不会改变工作区、Skills 或 MCP 配置。该窗口不承诺同步 ChatGPT 对话。
+
+桌面端仅在存在并通过验证的兼容 Tunnel 客户端时才可配对；本项目不随安装包提供 Tunnel 客户端。请使用已验证的客户端和连接器支持的认证方式，避免将本地 MCP 服务直接暴露到公网。
+
 ## Connector tools and task states
 
 The connector provides workspace metadata, bounded directory/file reads,

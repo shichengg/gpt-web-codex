@@ -3,6 +3,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const asar = require('@electron/asar');
 const { build: buildConfig } = require('../package.json');
 
 const SMOKE_TIMEOUT_MS = 30_000;
@@ -11,8 +12,25 @@ const CORE_RUNTIME_PACKAGES = Object.freeze(['@modelcontextprotocol/sdk', 'zod']
 async function smokePackage({ artifactsDir = path.join(__dirname, '..', 'artifacts') } = {}) {
   const executable = await resolvePackagedExecutable({ artifactsDir, productName: buildConfig.productName });
   await assertPackagedCoreAssets(path.dirname(executable));
+  await assertPackagedChatGptWindowController(path.dirname(executable));
   await runDiagnosticMode(executable);
   return executable;
+}
+
+async function assertPackagedChatGptWindowController(appOutDir) {
+  const archive = path.join(appOutDir, 'resources', 'app.asar');
+  const stat = await fs.stat(archive).catch(() => undefined);
+  if (!stat?.isFile()) throw new Error('Packaged ASAR archive is missing.');
+  let files;
+  try {
+    files = asar.listPackage(archive);
+  } catch {
+    throw new Error('Packaged ASAR archive could not be inspected.');
+  }
+  const normalizedFiles = files.map((file) => file.replaceAll('\\', '/').replace(/^\//, ''));
+  if (!normalizedFiles.includes('electron/chatgpt-window.cjs')) {
+    throw new Error('Packaged ChatGPT window controller is missing from the ASAR archive.');
+  }
 }
 
 async function assertPackagedCoreAssets(appOutDir) {
@@ -97,4 +115,10 @@ if (require.main === module) {
   );
 }
 
-module.exports = { assertPackagedCoreAssets, resolvePackagedExecutable, runDiagnosticMode, smokePackage };
+module.exports = {
+  assertPackagedChatGptWindowController,
+  assertPackagedCoreAssets,
+  resolvePackagedExecutable,
+  runDiagnosticMode,
+  smokePackage,
+};
