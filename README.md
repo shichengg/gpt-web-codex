@@ -67,6 +67,13 @@ Skills are read-only packages directly beneath `CODEX_SKILLS_ROOT`:
 .codex/skills/<skill-id>/SKILL.md
 ```
 
+Trusted bundles using the common layout below are also discovered with a
+namespaced ID such as `superpowers-brainstorming`:
+
+```text
+.codex/skills/<bundle-id>/skills/<skill-id>/SKILL.md
+```
+
 Each `SKILL.md` starts with simple frontmatter containing `name` and
 `description`, followed by the instructions. ChatGPT can list available
 skills, read a selected skill, and submit a Codex task with explicit `skillIds`.
@@ -143,9 +150,10 @@ runtime. A ChatGPT `codex_submit` call that omits `skillIds` uses those
 defaults; an explicit `skillIds` array (including `[]`) overrides them for
 that task only.
 
-This MVP does not package an OpenAI Tunnel client. The Task 6 adapter remains
-unavailable until a compatible client and its command contract are explicitly
-provisioned and verified.
+The Windows package includes the verified OpenAI Tunnel client at
+`resources/tools/tunnel-client.exe`. The Electron main process owns its
+start/stop/health lifecycle; Docker is not required. Tunnel ID and Runtime API
+Key are entered after installation and are kept in the private connector store.
 
 ### 中文桌面端首次使用
 
@@ -153,19 +161,20 @@ provisioned and verified.
 
 1. 选择本地工作区。
 2. 配置该工作区允许使用的 Skills 和 MCP 服务器。
-3. 在“设置与诊断”的引导中检查 Tunnel 状态。只有发现并验证兼容 Tunnel 客户端后，才能继续配对；当前未发现兼容 Tunnel 客户端时，应用不会假装已经配对，必须由用户提供已验证客户端。
-4. 从主控制台打开独立 ChatGPT 窗口并在其中登录 ChatGPT。
-5. 使用已验证的连接器添加流程添加连接器，然后验证工作区、Skills 和 MCP 配置。
+3. 在“设置与诊断”的引导中检查 Tunnel 状态。安装包会自动检测内置客户端；输入 Tunnel ID 和 Runtime API Key 后再配对。
+4. 在系统浏览器中打开 ChatGPT，使用已验证的连接器添加流程完成注册。
+5. 验证工作区、Skills 和 MCP 配置。
 
-独立 ChatGPT 窗口使用 Electron 专用 session 持久化登录状态。主控制台和 MCP 不读取、显示、导出 ChatGPT Cookie，也不会访问该 session 存储目录。选择“清除 ChatGPT 登录状态”会移除这个专用 session 中的 Cookie 和相关站点数据；这不会改变工作区、Skills 或 MCP 配置。该窗口不承诺同步 ChatGPT 对话。
+桌面端只提供后端设置、运行状态与诊断，不内嵌 ChatGPT 网页，也不保存 ChatGPT Cookie 或登录会话。
 
-桌面端仅在存在并通过验证的兼容 Tunnel 客户端时才可配对；本项目不随安装包提供 Tunnel 客户端。请使用已验证的客户端和连接器支持的认证方式，避免将本地 MCP 服务直接暴露到公网。
+桌面端仅在存在并通过验证的内置 Tunnel 客户端时才可配对。请勿把 Tunnel ID、Runtime API Key 或 ChatGPT 登录信息写入工作区文件，也不要将本地 MCP 服务直接暴露到公网。
 
 ## Connector tools and task states
 
-The connector provides workspace metadata, bounded directory/file reads,
-workspace search, Git status/diff, explicit Skills reads, MCP registry calls,
-and Codex task submission/status/output. A task moves through:
+The connector exposes a compact high-level MCP surface modeled after
+GPT-WebCodex. Local Skills and optional MCP servers are available through the
+single `skills_mcp` tool; registering a new local Skill or MCP server changes
+its returned status without creating another Tunnel. A task moves through:
 
 ```text
 queued -> running -> succeeded
@@ -198,11 +207,9 @@ commands.
 ## ChatGPT setup
 
 Run the connector with a same-host compatible MCP client. Start by calling
-`workspace_info`, then `list_skills` and `list_mcp_servers` to verify the
-binding. Submit only the task and Skills needed for the current workspace. A
-successful `codex_submit` returns a running task ID immediately; poll
-`codex_status`, use `codex_cancel` when needed, and fetch the bounded result
-with `codex_output`. A ChatGPT deployment requires the
+`workspace_context`, then `skills_mcp` with `action=status` to verify the
+binding and local registry. Use `agent_workflow` for coding tasks and
+`task_control` for persistent task state. A ChatGPT deployment requires the
 explicit HTTPS/tunnel and connector authentication layer described above;
 ChatGPT registration is outside this MVP.
 

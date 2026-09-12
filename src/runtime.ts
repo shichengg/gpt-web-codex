@@ -1,4 +1,5 @@
 import type { BridgeConfig } from './config.js';
+import { readFile } from 'node:fs/promises';
 import { CodexRunner } from './codex/runner.js';
 import { TaskStore } from './codex/tasks.js';
 import { loadMcpRegistry } from './mcp/registry.js';
@@ -44,17 +45,29 @@ async function createDependencies(config: BridgeConfig): Promise<ConnectorDepend
   const paths = await createPathPolicy(config.workspaceRoot, { deniedRoots: [config.stateDir] });
   const skills = await SkillCatalog.create(config.skillsRoot);
   const tasks = new TaskStore(config.stateDir);
+  const mcpTransport = new StdioMcpTransport(async (serverId) => loadMcpToken(config.mcpCredentialsPath ?? `${config.workspaceRoot}/.codex/mcp-credentials.json`, serverId));
   return {
     token: config.connectorToken,
     workspace: createWorkspaceTools(config.workspaceRoot, paths),
     git: createGitTools(config.workspaceRoot, paths),
     skills,
     mcp: await loadMcpRegistry(config.mcpRegistryPath, config.workspaceRoot),
-    mcpTransport: new StdioMcpTransport(),
+    mcpTransport,
     codex: new CodexRunner({ workspaceRoot: config.workspaceRoot, catalog: skills, store: tasks }),
     tasks,
     defaultSkillIds: config.defaultSkillIds,
+    close: () => mcpTransport.close(),
   };
+}
+
+async function loadMcpToken(filePath: string, serverId: string): Promise<string | undefined> {
+  try {
+    const value = JSON.parse(await readFile(filePath, 'utf8')) as { credentials?: Record<string, unknown> };
+    const token = value.credentials?.[serverId];
+    return typeof token === 'string' && token.trim() ? token.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function requireRuntimeUrl(server: ConnectorServer): string {

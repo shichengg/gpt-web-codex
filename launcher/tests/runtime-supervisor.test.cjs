@@ -5,7 +5,19 @@ const { EventEmitter } = require('node:events');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createRuntimeSupervisor } = require('../electron/runtime-supervisor.cjs');
+const { createRuntimeSupervisor, parseMcpToolResponse } = require('../electron/runtime-supervisor.cjs');
+
+test('parses JSON and text/event-stream MCP tool responses', () => {
+  assert.deepEqual(parseMcpToolResponse('application/json', JSON.stringify({ result: { structuredContent: { tools: ['stata_status'] } } })), { tools: ['stata_status'] });
+  assert.deepEqual(parseMcpToolResponse('text/event-stream', 'event: message\ndata: {"result":{"structuredContent":{"tools":["zotero_search"]}}}\n\n'), { tools: ['zotero_search'] });
+});
+
+test('preserves a bounded MCP rejection reason for the launcher UI', () => {
+  assert.throws(
+    () => parseMcpToolResponse('application/json', JSON.stringify({ result: { isError: true, structuredContent: { error: { message: 'MCP server is disabled: zotero' } } } })),
+    /MCP server is disabled: zotero/,
+  );
+});
 const { stopRuntimeBeforeQuit } = require('../electron/main.cjs');
 
 function fakeChild() {

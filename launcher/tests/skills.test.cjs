@@ -31,6 +31,18 @@ test('scans direct Skills into bounded renderer-safe summaries and previews', as
   assert.equal('path' in skills[0], false);
 });
 
+test('scans trusted Skills from a bundled skills subdirectory', async (t) => {
+  const profile = await makeProfile();
+  t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));
+  const bundledSkill = path.join(profile.skillsRoot, 'superpowers', 'skills', 'brainstorming');
+  await fs.mkdir(bundledSkill, { recursive: true });
+  await fs.writeFile(path.join(bundledSkill, 'SKILL.md'), '---\nname: Brainstorming\ndescription: Shape a feature before implementation.\n---\nPlan first.');
+
+  const skills = await scanSkills(profile);
+
+  assert.equal(skills.some((skill) => skill.id === 'superpowers-brainstorming' && skill.name === 'Brainstorming'), true);
+});
+
 test('rejects defaults outside the scanned catalog', async (t) => {
   const profile = await makeProfile();
   t.after(() => fs.rm(profile.workspaceRoot, { recursive: true, force: true }));

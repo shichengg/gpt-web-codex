@@ -127,10 +127,10 @@ async function resolveProfileRoots(profile) {
     throw new Error('Skills root must be the workspace .codex/skills directory');
   }
   const canonicalSkillsRoot = await fs.realpath(expectedSkillsRoot);
-  if (!isContained(workspaceRoot, canonicalSkillsRoot) || !samePath(configuredSkillsRoot, canonicalSkillsRoot)) {
+  if (!isContained(workspaceRoot, canonicalSkillsRoot) || !isContainedOrSame(canonicalSkillsRoot, configuredSkillsRoot)) {
     throw new Error('Skills root must be contained in the workspace .codex/skills directory');
   }
-  return { ...validated, workspaceRoot, skillsRoot: canonicalSkillsRoot };
+  return { ...validated, workspaceRoot, skillsRoot: configuredSkillsRoot };
 }
 
 async function canonicalizeProfile(profile) {
@@ -159,6 +159,10 @@ function samePath(left, right) {
 function isContained(parent, child) {
   const relative = path.relative(parent, child);
   return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function isContainedOrSame(parent, child) {
+  return samePath(parent, child) || isContained(parent, child);
 }
 
 function validateProfileId(id) {

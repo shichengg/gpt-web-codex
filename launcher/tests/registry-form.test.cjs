@@ -13,6 +13,11 @@ function assertDefaultUiState(snapshot, profileStatus = 'complete') {
   assert.deepEqual(snapshot.preferences, {
     language: 'zh-CN',
     theme: 'system',
+    proxyMode: 'auto',
+    proxyUrl: '',
+    startAtLogin: false,
+    autoStartServices: true,
+    keepRunningOnClose: true,
     guideDismissedSteps: [],
   });
   assert.deepEqual(snapshot.guide, [
@@ -60,6 +65,74 @@ test('accepts only the approved node executable with one local CJS entrypoint', 
   ]) {
     assert.throws(() => validateRegistryDraft({ servers: [server] }), /approved|entrypoint|argument/i);
   }
+});
+
+test('accepts the installed Stata GUI MCP executable and Python module entry', () => {
+  const tools = ['stata_run', 'stata_run_dofile', 'stata_session', 'stata_status'];
+  assert.deepEqual(validateRegistryDraft({ servers: [{ id: 'stata', command: 'D:\\Python\\Scripts\\stata-gui-mcp.exe', args: [], allowedTools: tools, timeoutMs: 120000 }] }).servers[0], {
+    id: 'stata', command: 'D:\\Python\\Scripts\\stata-gui-mcp.exe', args: [], allowedTools: tools, timeoutMs: 120000,
+  });
+  assert.deepEqual(validateRegistryDraft({ servers: [{ id: 'stata-python', command: 'D:\\Python\\python.exe', args: ['-m', 'stata_mcp'], allowedTools: tools, timeoutMs: 120000 }] }).servers[0].args, ['-m', 'stata_mcp']);
+});
+
+test('rejects arbitrary executable MCP commands outside the approved Stata and Python forms', () => {
+  assert.throws(() => validateRegistryDraft({ servers: [{ id: 'bad', command: 'C:\\Windows\\System32\\cmd.exe', args: ['/c', 'whoami'], allowedTools: ['check'], timeoutMs: 30000 }] }), /approved/i);
+});
+
+test('accepts generic absolute local executables and loopback HTTP MCP servers', () => {
+  const executable = validateRegistryDraft({ servers: [{ id: 'local', command: 'C:\\Tools\\local-mcp.exe', args: ['--stdio'], allowedTools: ['status'], timeoutMs: 30000 }] });
+  assert.equal(executable.servers[0].command, 'C:\\Tools\\local-mcp.exe');
+  const zotero = validateRegistryDraft({ servers: [{ id: 'zotero', transport: 'streamable-http', command: '', args: [], url: 'http://127.0.0.1:23120/mcp', allowedTools: ['search_library'], timeoutMs: 30000 }] });
+  assert.equal(zotero.servers[0].url, 'http://127.0.0.1:23120/mcp');
+  assert.throws(() => validateRegistryDraft({ servers: [{ id: 'remote', transport: 'streamable-http', command: '', args: [], url: 'https://example.com/mcp', allowedTools: ['search'], timeoutMs: 30000 }] }), /loopback/i);
+  assert.throws(() => validateRegistryDraft({ servers: [{ id: 'shell', command: 'C:\\Windows\\System32\\cmd.exe', args: ['/c', 'whoami'], allowedTools: ['check'], timeoutMs: 30000 }] }), /approved/i);
+});
+
+test('preserves the enabled flag while excluding HTTP credentials from registry data', () => {
+  const registry = validateRegistryDraft({ servers: [{ id: 'zotero', transport: 'streamable-http', url: 'http://127.0.0.1:23120/mcp', command: '', args: [], allowedTools: ['search_library'], timeoutMs: 30000, enabled: false }] });
+  assert.equal(registry.servers[0].enabled, false);
+  assert.equal(Object.hasOwn(registry.servers[0], 'headers'), false);
+});
+
+test('allows an empty allowlist until the first connection discovery', () => {
+  const registry = validateRegistryDraft({ servers: [{ id: 'custom', command: 'C:\\Tools\\custom-mcp.exe', args: [], allowedTools: [], timeoutMs: 30000 }] });
+  assert.deepEqual(registry.servers[0].allowedTools, []);
+});
+
+test('records a readable MCP discovery failure in launcher activity logs', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-mcp-discovery-log-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  await fs.mkdir(path.join(workspaceRoot, '.codex', 'skills'), { recursive: true });
+  const activity = [];
+  const controller = await createProfileController({
+    userDataPath: root,
+    shell: { openPath: async () => '' },
+    runtimeClient: { snapshot: async () => ({ state: 'stopped' }), mcpTools: async () => { throw new Error('MCP server unavailable'); } },
+    publishActivity: (entry) => activity.push(entry),
+  });
+  await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot: path.join(workspaceRoot, '.codex', 'skills'), enabledSkillIds: [] });
+  await controller.setActiveProfile('one');
+  await assert.rejects(() => controller.discoverMcpTools('zotero'), /MCP server unavailable/);
+  assert.match(activity.join('\n'), /zotero.*MCP server unavailable/i);
+});
+
+test('waits for a runtime restart before discovering MCP tools', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-mcp-discovery-wait-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspace');
+  await fs.mkdir(path.join(workspaceRoot, '.codex', 'skills'), { recursive: true });
+  let state = 'starting';
+  const controller = await createProfileController({
+    userDataPath: root,
+    shell: { openPath: async () => '' },
+    runtimeSupervisor: { status: () => ({ state: state === 'starting' ? 'starting' : 'running' }) },
+    runtimeClient: { snapshot: async () => ({ state: 'stopped' }), mcpTools: async () => { assert.equal(state, 'running'); return [{ name: 'check' }]; } },
+  });
+  await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot: path.join(workspaceRoot, '.codex', 'skills'), enabledSkillIds: [] });
+  await controller.setActiveProfile('one');
+  setTimeout(() => { state = 'running'; }, 30);
+  await assert.doesNotReject(() => controller.discoverMcpTools('lint'));
 });
 
 test('permits an empty registry when the optional workspace MCP directory is absent', async (t) => {
@@ -253,10 +326,10 @@ test('serializes start and profile selection so a stale profile cannot own the r
   await switching;
 
   const { preferences, guide, ...runtimeSnapshot } = startSnapshot;
-  assert.deepEqual(runtimeSnapshot, { state: 'running', workspace: await fs.realpath(oneRoot) });
+  assert.deepEqual(runtimeSnapshot, { state: 'running', workspace: await fs.realpath(oneRoot), proxy: { mode: 'auto', source: 'auto-direct', reachable: true, configured: false } });
   assertDefaultUiState({ preferences, guide });
   assert.deepEqual(calls, [['stop'], ['start', 'one'], ['stop']]);
   const { preferences: stoppedPreferences, guide: stoppedGuide, ...stoppedSnapshot } = await controller.snapshot();
-  assert.deepEqual(stoppedSnapshot, { state: 'stopped', workspace: null });
+  assert.deepEqual(stoppedSnapshot, { state: 'stopped', workspace: null, proxy: { mode: 'auto', source: 'auto-direct', reachable: true, configured: false } });
   assertDefaultUiState({ preferences: stoppedPreferences, guide: stoppedGuide });
 });

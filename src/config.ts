@@ -8,6 +8,7 @@ export interface BridgeConfig {
   stateDir: string;
   connectorToken: string;
   mcpRegistryPath: string;
+  mcpCredentialsPath?: string;
   defaultSkillIds: string[];
 }
 
@@ -28,6 +29,7 @@ const configSchema = z.object({
   stateDir: z.string().trim().min(1),
   connectorToken: z.string().trim().min(1),
   mcpRegistryPath: z.string().trim().min(1),
+  mcpCredentialsPath: z.string().trim().min(1),
   defaultSkillIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)).max(64)
     .refine((ids) => new Set(ids).size === ids.length, { message: 'default Skill IDs must be unique' }),
 });
@@ -54,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): BridgeConfig {
     stateDir: env.CODEX_STATE_DIR?.trim() || `${workspaceRoot}/.codex/state`,
     connectorToken,
     mcpRegistryPath: env.CODEX_MCP_REGISTRY?.trim() || `${workspaceRoot}/mcp-registry.json`,
+    mcpCredentialsPath: env.CODEX_MCP_CREDENTIALS?.trim() || `${workspaceRoot}/.codex/mcp-credentials.json`,
     defaultSkillIds: loadDefaultSkillIds(env),
   });
 

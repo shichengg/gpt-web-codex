@@ -29,6 +29,7 @@ describe('loadConfig', () => {
     expect(config.skillsRoot).toBe('C:/work/.codex/skills');
     expect(config.stateDir).toBe('C:/work/.codex/state');
     expect(config.mcpRegistryPath).toBe('C:/work/mcp-registry.json');
+    expect(config.mcpCredentialsPath).toBe('C:/work/.codex/mcp-credentials.json');
   });
 
   test('rejects non-loopback hosts', () => {

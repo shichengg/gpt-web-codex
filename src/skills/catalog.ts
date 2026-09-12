@@ -15,6 +15,7 @@ export interface SkillDocument extends SkillSummary {
 }
 
 interface ParsedSkill extends SkillDocument {}
+interface SkillPackage { id: string; relativePath: string; }
 
 /** Read-only catalog of direct-child SKILL.md packages under one trusted root. */
 export class SkillCatalog {
@@ -29,18 +30,11 @@ export class SkillCatalog {
   }
 
   async list(): Promise<SkillSummary[]> {
-    const entries = await readdir(this.root, { withFileTypes: true });
     const skills: SkillSummary[] = [];
 
-    for (const entry of entries) {
-      // Do not follow directory symlinks. A package must be a direct child.
-      if (!entry.isDirectory()) {
-        continue;
-      }
-
-      const id = entry.name;
+    for (const skill of await this.packages()) {
       try {
-        const document = await this.readPackage(id);
+        const document = await this.readPackage(skill);
         skills.push({ id: document.id, name: document.name, description: document.description });
       } catch {
         // Invalid or inaccessible packages are intentionally omitted from discovery.
@@ -51,20 +45,42 @@ export class SkillCatalog {
   }
 
   async read(id: string): Promise<SkillDocument> {
-    const known = await this.list();
-    if (!known.some((skill) => skill.id === id)) {
+    const skill = (await this.packages()).find((entry) => entry.id === id);
+    if (!skill) {
       throw new Error(`Unknown skill: ${id}`);
     }
 
     try {
-      return await this.readPackage(id);
+      return await this.readPackage(skill);
     } catch {
       throw new Error(`Unknown skill: ${id}`);
     }
   }
 
-  private async readPackage(id: string): Promise<ParsedSkill> {
-    const relativePath = path.join(id, 'SKILL.md');
+  private async packages(): Promise<SkillPackage[]> {
+    const entries = await readdir(this.root, { withFileTypes: true });
+    const packages: SkillPackage[] = [];
+    const usedIds = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isSkillId(entry.name)) continue;
+      packages.push({ id: entry.name, relativePath: path.join(entry.name, 'SKILL.md') });
+      usedIds.add(entry.name);
+    }
+    for (const bundle of entries) {
+      if (!bundle.isDirectory() || !isSkillId(bundle.name)) continue;
+      const nested = await readdir(path.join(this.root, bundle.name, 'skills'), { withFileTypes: true }).catch(() => []);
+      for (const entry of nested) {
+        const id = `${bundle.name}-${entry.name}`;
+        if (!entry.isDirectory() || !isSkillId(entry.name) || usedIds.has(id)) continue;
+        packages.push({ id, relativePath: path.join(bundle.name, 'skills', entry.name, 'SKILL.md') });
+        usedIds.add(id);
+      }
+    }
+    return packages;
+  }
+
+  private async readPackage(skill: SkillPackage): Promise<ParsedSkill> {
+    const { id, relativePath } = skill;
     const skillPath = await this.paths.resolve(relativePath);
     const source = await readSkillFile(skillPath, relativePath, this.paths);
     const metadata = parseFrontmatter(source);
@@ -75,6 +91,10 @@ export class SkillCatalog {
       content: metadata.content,
     };
   }
+}
+
+function isSkillId(value: string): boolean {
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value);
 }
 
 /**

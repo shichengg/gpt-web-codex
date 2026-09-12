@@ -12,12 +12,13 @@ const CORE_RUNTIME_PACKAGES = Object.freeze(['@modelcontextprotocol/sdk', 'zod']
 async function smokePackage({ artifactsDir = path.join(__dirname, '..', 'artifacts') } = {}) {
   const executable = await resolvePackagedExecutable({ artifactsDir, productName: buildConfig.productName });
   await assertPackagedCoreAssets(path.dirname(executable));
-  await assertPackagedChatGptWindowController(path.dirname(executable));
+  await assertNoPackagedChatGptBrowser(path.dirname(executable));
+  await assertPackagedTunnelClient(path.dirname(executable));
   await runDiagnosticMode(executable);
   return executable;
 }
 
-async function assertPackagedChatGptWindowController(appOutDir) {
+async function assertNoPackagedChatGptBrowser(appOutDir) {
   const archive = path.join(appOutDir, 'resources', 'app.asar');
   const stat = await fs.stat(archive).catch(() => undefined);
   if (!stat?.isFile()) throw new Error('Packaged ASAR archive is missing.');
@@ -28,8 +29,15 @@ async function assertPackagedChatGptWindowController(appOutDir) {
     throw new Error('Packaged ASAR archive could not be inspected.');
   }
   const normalizedFiles = files.map((file) => file.replaceAll('\\', '/').replace(/^\//, ''));
-  if (!normalizedFiles.includes('electron/chatgpt-window.cjs')) {
-    throw new Error('Packaged ChatGPT window controller is missing from the ASAR archive.');
+  const embeddedBrowserFiles = new Set([
+    'electron/chatgpt-window.cjs',
+    'electron/browser-shell-preload.cjs',
+    'dist/browser.html',
+    'dist/browser.js',
+    'dist/browser.css',
+  ]);
+  if (normalizedFiles.some((file) => embeddedBrowserFiles.has(file))) {
+    throw new Error('Packaged application still contains an embedded ChatGPT browser.');
   }
 }
 
@@ -43,6 +51,13 @@ async function assertPackagedCoreAssets(appOutDir) {
       `Packaged core runtime dependency is missing: ${packageName}.`,
     );
   }
+}
+
+async function assertPackagedTunnelClient(appOutDir) {
+  await assertFile(
+    path.join(appOutDir, 'resources', 'tools', 'tunnel-client.exe'),
+    'Packaged Tunnel client is missing from resources/tools.',
+  );
 }
 
 async function assertFile(filePath, message) {
@@ -116,8 +131,9 @@ if (require.main === module) {
 }
 
 module.exports = {
-  assertPackagedChatGptWindowController,
+  assertNoPackagedChatGptBrowser,
   assertPackagedCoreAssets,
+  assertPackagedTunnelClient,
   resolvePackagedExecutable,
   runDiagnosticMode,
   smokePackage,

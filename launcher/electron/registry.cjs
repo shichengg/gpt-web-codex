@@ -5,7 +5,7 @@ const path = require('node:path');
 const { createJsonStateStore } = require('./state.cjs');
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SERVER_FIELDS = new Set(['id', 'command', 'args', 'allowedTools', 'timeoutMs']);
+const SERVER_FIELDS = new Set(['id', 'transport', 'command', 'args', 'url', 'allowedTools', 'timeoutMs', 'enabled']);
 const MAX_SERVERS = 32;
 const MAX_ARGS = 64;
 const MAX_TOOLS = 128;
@@ -40,20 +40,37 @@ function validateServer(server, ids) {
   if (typeof server.id !== 'string' || !IDENTIFIER.test(server.id)) {
     throw new TypeError('MCP registry server ID must be a bounded identifier');
   }
+  const transport = server.transport ?? 'stdio';
+  if (!['stdio', 'streamable-http'].includes(transport)) throw new TypeError('MCP registry transport is invalid');
+  if (transport === 'streamable-http') {
+    if (!isLoopbackMcpUrl(server.url)) throw new TypeError('MCP HTTP URL must be a loopback /mcp endpoint');
+    return finishServer({ ...server, transport, command: '', args: [] }, ids);
+  }
   if (typeof server.command !== 'string' || !isBoundedText(server.command, 512)) {
     throw new TypeError('MCP registry server command must be a bounded local stdio command');
   }
-  if (!APPROVED_EXECUTABLES.has(server.command.toLowerCase())) {
+  const commandKind = localCommandKind(server.command);
+  if (!commandKind) {
     throw new TypeError('MCP registry server command is not an approved local executable');
   }
-  if (!Array.isArray(server.args) || server.args.length !== 1 ||
+  if (!Array.isArray(server.args) || server.args.length > MAX_ARGS ||
       !server.args.every((arg) => typeof arg === 'string' && isBoundedText(arg, 1_024))) {
-    throw new TypeError('MCP registry server requires exactly one local entrypoint argument');
+    throw new TypeError('MCP registry server arguments are invalid');
   }
-  if (!isLocalCjsEntrypoint(server.args[0])) {
+  if (commandKind === 'node' && (server.args.length !== 1 || !isLocalCjsEntrypoint(server.args[0]))) {
     throw new TypeError('MCP registry entrypoint must be an absolute local .cjs file');
   }
-  if (!Array.isArray(server.allowedTools) || server.allowedTools.length === 0 || server.allowedTools.length > MAX_TOOLS ||
+  if (commandKind === 'stata' && server.args.length !== 0) {
+    throw new TypeError('Stata GUI MCP executable does not accept launcher arguments');
+  }
+  if (commandKind === 'python' && (server.args.length < 2 || server.args[0] !== '-m' || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(server.args[1]))) {
+    throw new TypeError('Python MCP command must use a bounded -m module entry');
+  }
+  return finishServer(server, ids);
+}
+
+function finishServer(server, ids) {
+  if (!Array.isArray(server.allowedTools) || server.allowedTools.length > MAX_TOOLS ||
       new Set(server.allowedTools).size !== server.allowedTools.length) {
     throw new TypeError('MCP registry server allowed tools must be a unique bounded list');
   }
@@ -72,8 +89,11 @@ function validateServer(server, ids) {
   ids.add(server.id);
   return Object.freeze({
     id: server.id,
+    ...(server.enabled === false ? { enabled: false } : {}),
+    ...(server.transport ? { transport: server.transport } : {}),
     command: server.command,
     args: Object.freeze([...server.args]),
+    ...(server.url ? { url: server.url } : {}),
     allowedTools: Object.freeze([...server.allowedTools]),
     timeoutMs: server.timeoutMs,
   });
@@ -93,16 +113,48 @@ async function validateRegistryForProfile(draft, profile) {
   // selected workspace startable until its operator explicitly adds a local
   // MCP server, while every non-empty entry retains canonical containment.
   if (registry.servers.length === 0) return registry;
-  const approvedRoot = await canonicalDirectory(path.join(profile.workspaceRoot, '.codex', 'mcp'), 'MCP entrypoint root');
+  const nodeServers = registry.servers.filter((server) => localCommandKind(server.command) === 'node');
+  const approvedRoot = nodeServers.length > 0
+    ? await canonicalDirectory(path.join(profile.workspaceRoot, '.codex', 'mcp'), 'MCP entrypoint root')
+    : undefined;
   const servers = [];
   for (const server of registry.servers) {
+    if (server.transport === 'streamable-http') {
+      servers.push(server);
+      continue;
+    }
+    const commandKind = localCommandKind(server.command);
+    if (commandKind === 'stata' || commandKind === 'python' || commandKind === 'executable') {
+      const command = await canonicalFile(server.command, 'MCP executable');
+      servers.push({ ...server, command });
+      continue;
+    }
     const entrypoint = await canonicalFile(server.args[0], 'MCP entrypoint');
-    if (!isContained(approvedRoot, entrypoint)) {
+    if (!approvedRoot || !isContained(approvedRoot, entrypoint)) {
       throw new Error('MCP entrypoint must be contained in the workspace .codex/mcp directory');
     }
     servers.push({ ...server, args: [entrypoint] });
   }
   return validateRegistryDraft({ servers });
+}
+
+function isLoopbackMcpUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/mcp' && !url.username && !url.password;
+  } catch { return false; }
+}
+
+function localCommandKind(value) {
+  const lower = value.toLowerCase();
+  if (APPROVED_EXECUTABLES.has(lower)) return 'node';
+  if (!path.isAbsolute(value) && !path.win32.isAbsolute(value)) return undefined;
+  const base = path.basename(value).toLowerCase();
+  if (base === 'stata-gui-mcp.exe') return 'stata';
+  if (base === 'python.exe' || base === 'python3.exe') return 'python';
+  if (path.extname(base) === '.exe' && !['cmd.exe', 'powershell.exe', 'pwsh.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe'].includes(base)) return 'executable';
+  return undefined;
 }
 
 function isBoundedText(value, maximumLength) {
@@ -159,8 +211,11 @@ function copyRegistry(registry) {
   return {
     servers: registry.servers.map((server) => ({
       id: server.id,
+      ...(server.enabled === false ? { enabled: false } : {}),
+      ...(server.transport ? { transport: server.transport } : {}),
       command: server.command,
       args: [...server.args],
+      ...(server.url ? { url: server.url } : {}),
       allowedTools: [...server.allowedTools],
       timeoutMs: server.timeoutMs,
     })),
@@ -174,4 +229,5 @@ module.exports = {
   createRegistryStore,
   validateRegistryForProfile,
   validateRegistryDraft,
+  localCommandKind,
 };

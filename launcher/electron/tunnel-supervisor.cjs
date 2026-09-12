@@ -78,11 +78,15 @@ function createTunnelSupervisor(options) {
       failureMessage = undefined;
       try {
         if (owned) await stopOwnedTunnel();
-        const nextOwned = await options.runTunnel({
+        const runRequest = {
           target,
           connectorName: requestedName,
           credentials: { ...credentials },
-        });
+        };
+        for (const field of ['healthPort', 'mcpToken', 'proxyUrl']) {
+          if (request && Object.hasOwn(request, field)) runRequest[field] = request[field];
+        }
+        const nextOwned = await options.runTunnel(runRequest);
         if (!nextOwned || typeof nextOwned !== 'object') {
           throw new Error('Tunnel adapter did not return owned runtime state');
         }

@@ -29,13 +29,19 @@ test('preload exposes only declared launcher methods', () => {
     'saveSkills',
     'openSkillFolder',
     'saveMcpRegistry',
+    'listMcpRegistry',
+    'listMcpCredentials',
+    'saveMcpCredential',
+    'removeMcpCredential',
+    'discoverMcpTools',
+    'listMemory',
+    'saveMemory',
+    'removeMemory',
     'setupTunnel',
     'task',
     'cancelTask',
     'doctor',
     'openLogs',
-    'openChatGpt',
-    'clearChatGptSession',
     'preferences',
     'savePreferences',
     'onSnapshot',
@@ -50,7 +56,11 @@ test('preload forwards preferences only through dedicated IPC channels', async (
     on() {},
     removeListener() {},
   });
-  const preferences = { language: 'zh-CN', theme: 'system', guideDismissedSteps: [] };
+  const preferences = {
+    language: 'zh-CN', theme: 'system', proxyMode: 'auto', proxyUrl: '',
+    startAtLogin: false, autoStartServices: true, keepRunningOnClose: true,
+    guideDismissedSteps: [],
+  };
 
   await api.preferences();
   await api.savePreferences(preferences);
@@ -133,27 +143,26 @@ test('sandboxed preload exposes the bridge while require.main is unavailable', (
   }, { filename: 'sandboxed-preload.cjs' });
 
   assert.equal(sandboxedRequire.main, undefined);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0][0], 'gptWebCodex');
   assert.deepEqual(Object.keys(calls[0][1]), [
     'snapshot', 'start', 'stop', 'selectWorkspace', 'listProfiles', 'saveProfile',
     'setActiveProfile', 'listSkills', 'saveSkills', 'openSkillFolder', 'saveMcpRegistry',
-    'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs', 'openChatGpt',
-    'clearChatGptSession', 'preferences', 'savePreferences', 'onSnapshot', 'onLog',
+    'listMcpRegistry', 'listMcpCredentials', 'saveMcpCredential', 'removeMcpCredential', 'discoverMcpTools', 'listMemory', 'saveMemory', 'removeMemory',
+    'setupTunnel', 'task', 'cancelTask', 'doctor', 'openLogs',
+    'preferences', 'savePreferences', 'onSnapshot', 'onLog',
   ]);
+  assert.equal(calls[1][0], 'mcpAssistant');
+  assert.equal(typeof calls[1][1].snapshot, 'function');
+  assert.equal(typeof calls[1][1].listSkills, 'function');
+  assert.equal(typeof calls[1][1].listMcpRegistry, 'function');
 });
 
-test('preload forwards ChatGPT controls without payloads', async () => {
-  const calls = [];
-  const api = createPreloadApi({
-    invoke: (...args) => { calls.push(args); return Promise.resolve(); },
-    on() {},
-    removeListener() {},
-  });
-  await api.openChatGpt();
-  await api.clearChatGptSession();
-  assert.deepEqual(calls, [
-    ['launcher:open-chatgpt'],
-    ['launcher:clear-chatgpt-session'],
-  ]);
+test('preload exposes the reference mcpAssistant bridge with additive Skills and MCP methods', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.cjs'), 'utf8');
+  assert.match(source, /mcpAssistant/);
+  assert.match(source, /workspaceContext/);
+  assert.match(source, /inspectBuild/);
+  assert.match(source, /listSkills/);
+  assert.match(source, /listMcpRegistry/);
 });

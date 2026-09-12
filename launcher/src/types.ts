@@ -5,9 +5,9 @@ export interface LauncherSnapshot {
   tunnelState?: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
   tunnelConfigured?: boolean;
   paired?: boolean;
-  chatGptOpened?: boolean;
   connectorName?: string;
   tunnelMessage?: string;
+  proxy?: { mode: 'auto' | 'system' | 'manual' | 'direct'; source: string; reachable: boolean; configured: boolean };
   /** Always present, renderer-safe UI configuration persisted by the launcher. */
   preferences: LauncherUiPreferences;
   /** Always present, renderer-safe setup state derived by the main process. */
@@ -15,7 +15,8 @@ export interface LauncherSnapshot {
 }
 
 export type UiTheme = 'system' | 'light' | 'dark';
-export interface LauncherUiPreferences { language: 'zh-CN' | 'en'; theme: UiTheme; guideDismissedSteps: number[]; }
+export type ProxyMode = 'auto' | 'system' | 'manual' | 'direct';
+export interface LauncherUiPreferences { language: 'zh-CN' | 'en'; theme: UiTheme; proxyMode: ProxyMode; proxyUrl: string; startAtLogin: boolean; autoStartServices: boolean; keepRunningOnClose: boolean; guideDismissedSteps: number[]; }
 export interface GuideStep { id: number; status: 'complete' | 'needs-action' | 'unavailable'; messageKey: string; }
 
 export interface DiagnosticReport {
@@ -51,6 +52,14 @@ export interface McpRegistryDraft {
   servers: McpServerDraft[];
 }
 
+export interface MemoryEntry {
+  id: string;
+  title: string;
+  content: string;
+  scope: 'global' | 'workspace';
+  createdAt: string;
+}
+
 /** One-way setup input. Runtime keys never appear in a snapshot or callback. */
 export interface TunnelSetup {
   tunnelId: string;
@@ -78,13 +87,15 @@ export interface GptWebCodexApi {
   saveSkills(skillIds: string[]): Promise<LauncherSnapshot>;
   openSkillFolder(skillId: string): Promise<void>;
   saveMcpRegistry(draft: McpRegistryDraft): Promise<LauncherSnapshot>;
+  listMcpRegistry(): Promise<McpRegistryDraft>;
+  listMemory(): Promise<MemoryEntry[]>;
+  saveMemory(draft: Pick<MemoryEntry, 'title' | 'content' | 'scope'>): Promise<MemoryEntry>;
+  removeMemory(id: string): Promise<boolean>;
   setupTunnel(setup: TunnelSetup): Promise<LauncherSnapshot>;
   task(taskId: string): Promise<TaskActivity>;
   cancelTask(taskId: string): Promise<LauncherSnapshot>;
   doctor(): Promise<DiagnosticReport>;
   openLogs(): Promise<void>;
-  openChatGpt(): Promise<void>;
-  clearChatGptSession(): Promise<void>;
   preferences(): Promise<LauncherUiPreferences>;
   savePreferences(preferences: LauncherUiPreferences): Promise<LauncherUiPreferences>;
   onSnapshot(listener: (snapshot: LauncherSnapshot) => void): () => void;

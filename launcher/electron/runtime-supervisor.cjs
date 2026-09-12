@@ -7,7 +7,7 @@ const { MAX_ENABLED_SKILLS } = require('./profiles.cjs');
 const { redactAndBound } = require('./runtime-client.cjs');
 
 const PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const FORWARDED_TOOLS = new Set(['codex_cancel', 'codex_status', 'codex_output']);
+const FORWARDED_TOOLS = new Set(['codex_cancel', 'codex_status', 'codex_output', 'mcp']);
 const READY_URL = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):\d{1,5}\/mcp$/;
 
 /**
@@ -56,6 +56,11 @@ function createRuntimeSupervisor(options) {
     return state === 'running' && typeof active?.url === 'string' ? active.url : undefined;
   }
 
+  /** Main-process-only handoff for the Tunnel bearer header; never expose via IPC. */
+  function getActiveRuntimeToken() {
+    return state === 'running' && typeof active?.token === 'string' ? active.token : undefined;
+  }
+
   function appendLog(entry, token = currentToken) {
     const source = typeof entry === 'string' ? entry : 'Invalid runtime activity entry';
     const safe = redactAndBound(redactRuntimeToken(source, token), maxLogBytes);
@@ -86,11 +91,11 @@ function createRuntimeSupervisor(options) {
     return next;
   }
 
-  function start(profile, mcpRegistryPath) {
-    return enqueue(() => startRuntime(profile, mcpRegistryPath));
+  function start(profile, mcpRegistryPath, mcpCredentialsPath) {
+    return enqueue(() => startRuntime(profile, mcpRegistryPath, mcpCredentialsPath));
   }
 
-  async function startRuntime(profile, mcpRegistryPath) {
+  async function startRuntime(profile, mcpRegistryPath, mcpCredentialsPath) {
     validateStart(profile, mcpRegistryPath);
     if (state === 'running' && active?.profile.id === profile.id) return status();
     if (state !== 'stopped') await stopRuntime();
@@ -113,6 +118,7 @@ function createRuntimeSupervisor(options) {
         CODEX_SKILLS_ROOT: profile.skillsRoot,
         CODEX_STATE_DIR: stateDir,
         CODEX_MCP_REGISTRY: mcpRegistryPath,
+        ...(typeof mcpCredentialsPath === 'string' ? { CODEX_MCP_CREDENTIALS: mcpCredentialsPath } : {}),
         CODEX_CONNECTOR_TOKEN: token,
         // Profile defaults are validated against the selected workspace catalog
         // before this supervisor is started. The core applies them only if a
@@ -194,14 +200,14 @@ function createRuntimeSupervisor(options) {
     return status();
   }
 
-  function restart(profile, mcpRegistryPath) {
-    return enqueue(() => restartRuntime(profile, mcpRegistryPath));
+  function restart(profile, mcpRegistryPath, mcpCredentialsPath) {
+    return enqueue(() => restartRuntime(profile, mcpRegistryPath, mcpCredentialsPath));
   }
 
-  async function restartRuntime(profile, mcpRegistryPath) {
+  async function restartRuntime(profile, mcpRegistryPath, mcpCredentialsPath) {
     if (state !== 'running') return status();
     await stopRuntime();
-    return startRuntime(profile, mcpRegistryPath);
+    return startRuntime(profile, mcpRegistryPath, mcpCredentialsPath);
   }
 
   function attachRuntimeListeners(nextChild, token) {
@@ -278,7 +284,7 @@ function createRuntimeSupervisor(options) {
     return () => lifecycleListeners.delete(listener);
   }
 
-  return Object.freeze({ call, getActiveRuntimeUrl, restart, start, status, stop, subscribeLifecycle, subscribeLogs });
+  return Object.freeze({ call, getActiveRuntimeUrl, getActiveRuntimeToken, restart, start, status, stop, subscribeLifecycle, subscribeLogs });
 }
 
 function validateStart(profile, mcpRegistryPath) {
@@ -495,11 +501,37 @@ async function requestRuntimeTool(url, token, tool, input) {
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name: tool, arguments: input } }),
   });
   if (!response.ok) throw new Error('Runtime tool request failed');
-  const body = await response.json();
-  const result = body?.result;
-  if (!result || result.isError) throw new Error('Runtime tool request was rejected');
+  const body = await response.text();
+  return parseMcpToolResponse(response.headers.get('content-type') || '', body);
+}
+
+function parseMcpToolResponse(contentType, body) {
+  if (typeof body !== 'string' || body.length === 0) throw new Error('Runtime tool response was invalid');
+  const normalizedType = String(contentType).toLowerCase();
+  let message;
+  if (normalizedType.includes('text/event-stream')) {
+    const events = body.split(/\r?\n\r?\n/);
+    for (const event of events) {
+      const data = event.split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice('data:'.length).trimStart())
+        .join('\n');
+      if (!data || data === '[DONE]') continue;
+      try { message = JSON.parse(data); } catch { continue; }
+    }
+  } else {
+    try { message = JSON.parse(body); } catch { throw new Error('Runtime tool response was invalid'); }
+  }
+  const result = message?.result;
+  if (!result || result.isError) {
+    const detail = result?.structuredContent?.error?.message;
+    if (typeof detail === 'string' && detail.trim()) {
+      throw new Error(`Runtime tool request was rejected: ${redactAndBound(detail.trim(), 512)}`);
+    }
+    throw new Error('Runtime tool request was rejected');
+  }
   if (result.structuredContent && typeof result.structuredContent === 'object') return result.structuredContent;
   throw new Error('Runtime tool response was invalid');
 }
 
-module.exports = { createRuntimeSupervisor };
+module.exports = { createRuntimeSupervisor, parseMcpToolResponse };

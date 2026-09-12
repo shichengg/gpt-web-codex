@@ -13,13 +13,13 @@ const MAX_PREVIEW_BYTES = 4096;
 /** Return renderer-safe metadata, never source paths or full Skill content. */
 async function scanSkills(profile) {
   const { skillsRoot: canonicalRoot } = await resolveProfileRoots(profile);
-  const entries = await fs.readdir(canonicalRoot, { withFileTypes: true });
+  const entries = await skillDirectories(canonicalRoot);
   const skills = [];
 
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of entries.sort((left, right) => left.id.localeCompare(right.id))) {
     if (skills.length === MAX_CATALOG_SKILLS) break;
-    if (!entry.isDirectory() || !SKILL_ID.test(entry.name)) continue;
-    const directory = path.join(canonicalRoot, entry.name);
+    if (!SKILL_ID.test(entry.id)) continue;
+    const directory = entry.directory;
     try {
       const directoryInfo = await fs.lstat(directory);
       const skillFile = path.join(directory, 'SKILL.md');
@@ -28,7 +28,7 @@ async function scanSkills(profile) {
       const document = await fs.readFile(skillFile, 'utf8');
       const metadata = parseMetadata(document);
       skills.push(Object.freeze({
-        id: entry.name,
+        id: entry.id,
         name: metadata.name,
         description: metadata.description,
         preview: boundedPreview(metadata.body),
@@ -54,8 +54,9 @@ async function saveSkillDefaults(profile, skillIds) {
 
 async function openSkillFolder(profile, skillId, shell, options = {}) {
   validateSkillIds([skillId]);
-  const catalog = await scanSkills(profile);
-  if (!catalog.some((skill) => skill.id === skillId)) {
+  const { skillsRoot } = await resolveProfileRoots(profile);
+  const directory = (await skillDirectories(skillsRoot)).find((entry) => entry.id === skillId)?.directory;
+  if (!directory || !(await scanSkills(profile)).some((skill) => skill.id === skillId)) {
     throw new Error(`Unknown Skill: ${skillId}`);
   }
   if (!shell || typeof shell.openPath !== 'function') {
@@ -63,9 +64,8 @@ async function openSkillFolder(profile, skillId, shell, options = {}) {
   }
   // Resolve and verify again immediately before crossing the shell boundary.
   // This rejects a directory swapped after catalog scanning.
-  const { skillsRoot } = await resolveProfileRoots(profile);
   if (typeof options.beforeOpen === 'function') await options.beforeOpen();
-  const expectedPath = path.join(skillsRoot, skillId);
+  const expectedPath = directory;
   const info = await fs.lstat(expectedPath).catch(() => undefined);
   if (!info || !info.isDirectory() || info.isSymbolicLink()) {
     throw new Error('Skill folder changed before it could be opened');
@@ -75,6 +75,31 @@ async function openSkillFolder(profile, skillId, shell, options = {}) {
     throw new Error('Skill folder changed before it could be opened');
   }
   return shell.openPath(finalPath);
+}
+
+/** Discover direct packages and the common <bundle>/skills/<package> layout. */
+async function skillDirectories(skillsRoot) {
+  const direct = await fs.readdir(skillsRoot, { withFileTypes: true });
+  const result = [];
+  const usedIds = new Set();
+  for (const entry of direct) {
+    if (!entry.isDirectory() || !SKILL_ID.test(entry.name)) continue;
+    const directory = path.join(skillsRoot, entry.name);
+    result.push({ id: entry.name, directory });
+    usedIds.add(entry.name);
+  }
+  for (const bundle of direct) {
+    if (!bundle.isDirectory() || !SKILL_ID.test(bundle.name)) continue;
+    const nestedRoot = path.join(skillsRoot, bundle.name, 'skills');
+    const nested = await fs.readdir(nestedRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of nested) {
+      const id = `${bundle.name}-${entry.name}`;
+      if (!entry.isDirectory() || !SKILL_ID.test(entry.name) || usedIds.has(id)) continue;
+      result.push({ id, directory: path.join(nestedRoot, entry.name) });
+      usedIds.add(id);
+    }
+  }
+  return result;
 }
 
 function samePath(left, right) {
@@ -116,4 +141,4 @@ function boundedPreview(value) {
   return Buffer.from(value, 'utf8').subarray(0, MAX_PREVIEW_BYTES).toString('utf8');
 }
 
-module.exports = { MAX_PREVIEW_BYTES, openSkillFolder, saveSkillDefaults, scanSkills, validateSkillIds };
+module.exports = { MAX_PREVIEW_BYTES, openSkillFolder, saveSkillDefaults, scanSkills, skillDirectories, validateSkillIds };

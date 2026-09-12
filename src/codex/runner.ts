@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { SkillCatalog } from '../skills/catalog.js';
 import { TaskStore, type RunningTask } from './tasks.js';
 
-export interface CodexRequest { prompt: string; skillIds: string[]; }
+export interface CodexRequest { prompt: string; skillIds: string[]; skillSelection?: 'auto' | 'explicit'; }
 interface SpawnOptions { cwd: string; shell: false; }
 interface SpawnedChild {
   stdout?: { on(event: string, listener: (chunk: unknown) => void): unknown } | null;
@@ -66,13 +66,13 @@ export class CodexRunner {
 
   private async submitWhenOpen(request: CodexRequest, signal?: AbortSignal): Promise<RunningTask> {
     validateRequest(request, this.options);
-    const skillContent = await this.loadSkills(request.skillIds);
+    const skillContent = await this.loadSkills(request.skillIds, request.skillSelection ?? 'explicit');
     if (this.closing) throw new Error('Codex runner is closing');
     const task = await this.options.store.create(request);
     if (this.closing) return this.options.store.complete(task.id, 'cancelled', 'Connector is shutting down');
     const running = await this.options.store.complete(task.id, 'running');
     if (this.closing) return this.options.store.complete(task.id, 'cancelled', 'Connector is shutting down');
-    const prompt = assemblePrompt(request.prompt, skillContent, this.options.maxSkillContextBytes ?? 64 * 1024);
+    const prompt = assemblePrompt(request.prompt, skillContent, this.options.maxSkillContextBytes ?? 64 * 1024, request.skillSelection ?? 'explicit');
     let child: SpawnedChild;
     try {
       child = this.spawn('codex', ['exec', '--json', prompt], { cwd: this.options.workspaceRoot, shell: false });
@@ -150,8 +150,18 @@ export class CodexRunner {
     return { child, done, cancel: requestStop };
   }
 
-  private async loadSkills(skillIds: string[]): Promise<string[]> {
+  private async loadSkills(skillIds: string[], selection: 'auto' | 'explicit'): Promise<string[]> {
     const uniqueIds = [...new Set(skillIds)];
+    if (selection === 'auto') {
+      const catalog = await this.options.catalog.list();
+      const knownIds = new Set(catalog.map((skill) => skill.id));
+      const unknown = uniqueIds.find((id) => !knownIds.has(id));
+      if (unknown) throw new Error(`Unknown skill: ${unknown}`);
+      const selected = new Set(uniqueIds);
+      return catalog.filter((skill) => selected.has(skill.id)).map((skill) =>
+        `- ${skill.id}: ${skill.name}\n  description: ${skill.description}`,
+      );
+    }
     const documents = await Promise.all(uniqueIds.map((id) => this.options.catalog.read(id)));
     return documents.map((skill) => `--- SKILL: ${skill.id} ---\n${skill.content}\n--- END SKILL: ${skill.id} ---`);
   }
@@ -169,11 +179,14 @@ function validateRequest(request: CodexRequest, options: CodexRunnerOptions): vo
   if (Buffer.byteLength(JSON.stringify(request), 'utf8') > (options.maxMetadataBytes ?? 512 * 1024)) throw new Error('Codex request metadata exceeds the configured byte limit');
 }
 
-function assemblePrompt(prompt: string, skills: string[], maxSkillContextBytes: number): string {
+function assemblePrompt(prompt: string, skills: string[], maxSkillContextBytes: number, selection: 'auto' | 'explicit'): string {
   if (skills.length === 0) return prompt;
   const context = `${skills.join('\n')}\n[END SELECTED SKILLS]`;
   const bounded = Buffer.byteLength(context, 'utf8') <= maxSkillContextBytes ? context : `${Buffer.from(context, 'utf8').subarray(0, Math.max(0, maxSkillContextBytes - 15)).toString('utf8')}\n[TRUNCATED]`;
-  return `${prompt}\n\n[SELECTED SKILLS]\n${bounded}`;
+  const heading = selection === 'auto'
+    ? '[AVAILABLE SKILLS - read the Skill instructions only when the task requires it]'
+    : '[SELECTED SKILLS]';
+  return `${prompt}\n\n${heading}\n${bounded}`;
 }
 
 function validateBound(name: string, value: number, minimum: number, maximum: number): void {

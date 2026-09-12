@@ -3,9 +3,9 @@ const test = require('node:test');
 
 const {
   createMainWindow,
-  bindChatGptCleanup,
   createActivityPublisher,
   createSnapshotPublisher,
+  createTray,
   installQuitGuard,
   isAllowedExternalUrl,
   registerIpcHandlers,
@@ -67,6 +67,24 @@ test('window has isolated renderer preferences', () => {
     sandbox: true,
     preload: windowOptions.webPreferences.preload,
   });
+});
+
+test('single-instance guard focuses the existing launcher instead of starting a second Tunnel', () => {
+  const { acquireSingleInstanceLock } = require('../electron/main.cjs');
+  const events = {};
+  let focused = 0;
+  let quit = 0;
+  const app = {
+    requestSingleInstanceLock: () => true,
+    on: (name, handler) => { events[name] = handler; },
+    quit: () => { quit += 1; },
+  };
+  const acquired = acquireSingleInstanceLock(app, () => ({ show: () => { focused += 1; }, focus: () => { focused += 1; } }));
+  assert.equal(acquired, true);
+  assert.equal(quit, 0);
+  assert.equal(typeof events['second-instance'], 'function');
+  events['second-instance']();
+  assert.equal(focused, 2);
 });
 
 test('main process permits only the explicit documentation allowlist', () => {
@@ -150,6 +168,15 @@ test('IPC rejects a sender other than the current launcher renderer', () => {
   assert.equal(started, false);
 });
 
+test('IPC accepts the trusted launcher renderer when the file URL has a theme query', async () => {
+  const handlers = new Map();
+  const trusted = { getURL: () => `${rendererEntryUrl}?theme=light` };
+  registerIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) }, {
+    start: async () => ({ state: 'running' }),
+  }, () => trusted);
+  await assert.deepEqual(await handlers.get('launcher:start')({ sender: trusted }), { state: 'running' });
+});
+
 test('IPC validates bounded Skill, registry, and task payloads before controllers run', () => {
   const handlers = new Map();
   const sender = { getURL: () => rendererEntryUrl };
@@ -189,21 +216,13 @@ test('IPC routes task queries to the dedicated controller operation', async () =
   assert.deepEqual(calls, ['task-1']);
 });
 
-test('ChatGPT IPC rejects payloads and routes fixed operations', async () => {
+test('does not register embedded ChatGPT browser IPC', () => {
   const handlers = new Map();
   const sender = { getURL: () => rendererEntryUrl };
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler) };
-  const calls = [];
-  registerIpcHandlers(ipcMain, {
-    openChatGpt: async () => { calls.push('open'); return { open: true }; },
-    clearChatGptSession: async () => { calls.push('clear'); },
-  }, () => sender);
-
-  assert.deepEqual(await handlers.get('launcher:open-chatgpt')({ sender }), { open: true });
-  await handlers.get('launcher:clear-chatgpt-session')({ sender });
-  assert.deepEqual(calls, ['open', 'clear']);
-  assert.throws(() => handlers.get('launcher:open-chatgpt')({ sender }, { url: 'https://evil.example' }), /payload/);
-  assert.throws(() => handlers.get('launcher:clear-chatgpt-session')({ sender }, 'unexpected'), /payload/);
+  registerIpcHandlers(ipcMain, {}, () => sender);
+  assert.equal(handlers.has('launcher:open-chatgpt'), false);
+  assert.equal(handlers.has('launcher:clear-chatgpt-session'), false);
 });
 
 test('setup IPC passes credentials only to the main-process setup operation', async () => {
@@ -264,14 +283,53 @@ test('window prevents navigation, denies popups, and denies permission requests'
   permissionHandler(null, 'notifications', (granted) => assert.equal(granted, false));
 });
 
-test('rebuilt macOS main windows retain ChatGPT cleanup binding', () => {
-  let closed = 0;
-  let listener;
-  const mainWindow = {
-    on: (event, callback) => { if (event === 'closed') listener = callback; },
+test('tray opens only the backend settings surface and exposes quit', () => {
+  const actions = {};
+  const tray = { setToolTip: () => {}, setContextMenu: (menu) => { tray.menu = menu; }, on: (event, handler) => { actions[event] = handler; } };
+  const electron = {
+    Tray: function Tray() { return tray; },
+    Menu: { buildFromTemplate: (template) => template },
+    nativeImage: { createFromPath: () => ({ resize: () => ({}) }) },
   };
-  const chatWindow = { close: () => { closed += 1; } };
-  bindChatGptCleanup(mainWindow, () => chatWindow);
-  listener();
-  assert.equal(closed, 1);
+  const calls = { manager: 0, quit: 0 };
+  const created = createTray(electron, 'app-icon.png', () => { calls.manager += 1; }, () => { calls.quit += 1; });
+  assert.equal(created, tray);
+  assert.equal(tray.menu[0].label, '打开设置');
+  tray.menu[0].click(); tray.menu[2].click();
+  assert.deepEqual(calls, { manager: 1, quit: 1 });
+  actions.click();
+  assert.equal(calls.manager, 2);
+});
+
+test('backend settings window is the startup surface', () => {
+  const events = {};
+  const window = {
+    webContents: { on: () => {}, setWindowOpenHandler: () => {}, session: { setPermissionRequestHandler: () => {} } },
+    once: () => {},
+    once: (name, handler) => { events[name] = handler; },
+    on: () => {},
+    loadFile: async () => {},
+    show: () => { events.shown = true; },
+    hide: () => {},
+  };
+  createMainWindow({ BrowserWindow: function BrowserWindow() { return window; }, shell: { openExternal: async () => {} } });
+  events['ready-to-show']();
+  assert.equal(events.shown, true);
+});
+
+test('closing the main window hides it without referencing an undefined forceQuit flag', () => {
+  let closeHandler;
+  let prevented = 0;
+  let hidden = 0;
+  const window = {
+    webContents: { on: () => {}, setWindowOpenHandler: () => {}, session: { setPermissionRequestHandler: () => {} } },
+    once: () => {},
+    on: (name, handler) => { if (name === 'close') closeHandler = handler; },
+    loadFile: async () => {},
+    hide: () => { hidden += 1; },
+  };
+  createMainWindow({ BrowserWindow: function BrowserWindow() { return window; }, shell: { openExternal: async () => {} } });
+  closeHandler({ preventDefault: () => { prevented += 1; } });
+  assert.equal(prevented, 1);
+  assert.equal(hidden, 1);
 });

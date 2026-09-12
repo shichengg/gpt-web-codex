@@ -93,4 +93,65 @@ describe('McpRegistry', () => {
 
     await expect(loadMcpRegistry(registryPath, workspaceRoot)).rejects.toThrow('contained');
   });
+
+  test('loads approved Stata GUI MCP executable and Python module forms', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-stata-mcp-'));
+    temporaryRoots.push(root);
+    const workspaceRoot = path.join(root, 'workspace');
+    const registryPath = path.join(root, 'mcp-registry.json');
+    const stataCommand = path.join(root, 'stata-gui-mcp.exe');
+    const pythonCommand = path.join(root, 'python.exe');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(stataCommand, 'stub');
+    await writeFile(pythonCommand, 'stub');
+    await writeFile(registryPath, JSON.stringify({ servers: [
+      { id: 'stata', command: stataCommand, args: [], allowedTools: ['stata_status'] },
+      { id: 'stata-python', command: pythonCommand, args: ['-m', 'stata_mcp'], allowedTools: ['stata_status'] },
+    ] }));
+    const registry = await loadMcpRegistry(registryPath, workspaceRoot);
+    expect(registry.list()).toHaveLength(2);
+  });
+
+  test('loads a loopback Streamable HTTP MCP and rejects remote HTTP', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-http-mcp-'));
+    temporaryRoots.push(root);
+    const workspaceRoot = path.join(root, 'workspace');
+    const registryPath = path.join(root, 'mcp-registry.json');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(registryPath, JSON.stringify({ servers: [{ id: 'zotero', transport: 'streamable-http', command: '', args: [], url: 'http://127.0.0.1:23120/mcp', allowedTools: ['search_library'] }] }));
+    await expect(loadMcpRegistry(registryPath, workspaceRoot)).resolves.toBeDefined();
+    expect(() => McpRegistry.fromJson({ servers: [{ id: 'remote', transport: 'streamable-http', command: '', url: 'https://example.com/mcp', allowedTools: ['search'] }] })).toThrow(/loopback/i);
+  });
+
+  test('preserves disabled MCP servers without exposing credentials', () => {
+    const registry = McpRegistry.fromJson({
+      servers: [{ id: 'zotero', transport: 'streamable-http', url: 'http://127.0.0.1:23120/mcp', allowedTools: ['search_library'], timeoutMs: 30000, enabled: false }],
+    });
+    expect(registry.get('zotero')).toMatchObject({ enabled: false });
+    expect(registry.list()).not.toContainEqual(expect.objectContaining({ headers: expect.anything() }));
+    return expect(registry.call('zotero', 'search_library', {}, fakeTransport)).rejects.toThrow(/disabled/i);
+  });
+
+  test('allows an initially empty tool allowlist for discovery', () => {
+    const registry = McpRegistry.fromJson({
+      servers: [{ id: 'custom', command: 'node', args: ['custom.cjs'], allowedTools: [], timeoutMs: 30000 }],
+    });
+    expect(registry.get('custom')?.allowedTools).toEqual([]);
+    return expect(registry.call('custom', 'unknown', {}, fakeTransport)).rejects.toThrow(/not allowed/i);
+  });
+
+  test('loads a generic absolute local executable but rejects shell hosts', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-exe-mcp-'));
+    temporaryRoots.push(root);
+    const workspaceRoot = path.join(root, 'workspace');
+    const registryPath = path.join(root, 'mcp-registry.json');
+    const command = path.join(root, 'local-mcp.exe');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(command, 'stub');
+    await writeFile(registryPath, JSON.stringify({ servers: [{ id: 'local', command, args: ['--stdio'], allowedTools: ['status'] }] }));
+    await expect(loadMcpRegistry(registryPath, workspaceRoot)).resolves.toBeDefined();
+    expect(() => McpRegistry.fromJson({ servers: [{ id: 'shell', command: 'C:\\Windows\\System32\\cmd.exe', args: ['/c', 'whoami'], allowedTools: ['status'] }] })).not.toThrow();
+    await writeFile(registryPath, JSON.stringify({ servers: [{ id: 'shell', command: 'C:\\Windows\\System32\\cmd.exe', args: ['/c', 'whoami'], allowedTools: ['status'] }] }));
+    await expect(loadMcpRegistry(registryPath, workspaceRoot)).rejects.toThrow(/approved/i);
+  });
 });

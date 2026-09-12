@@ -23,7 +23,24 @@
     },
     "files": [
       "dist/**/*",
-      "electron/*.cjs",
+      "electron/connector-identity.cjs",
+      "electron/doctor.cjs",
+      "electron/launcher-state.cjs",
+      "electron/main.cjs",
+      "electron/mcp-credentials.cjs",
+      "electron/memory-store.cjs",
+      "electron/preload.cjs",
+      "electron/profiles.cjs",
+      "electron/proxy-service.cjs",
+      "electron/registry.cjs",
+      "electron/runtime-client.cjs",
+      "electron/runtime-supervisor.cjs",
+      "electron/skills.cjs",
+      "electron/state.cjs",
+      "electron/tunnel-client.cjs",
+      "electron/tunnel-supervisor.cjs",
+      "electron/app-icon.png",
+      "electron/app-icon.ico",
       "package.json"
     ],
     "extraResources": [
@@ -41,9 +58,14 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/tools/tunnel-client.exe",
+        "to": "tools/tunnel-client.exe"
       }
     ],
     "win": {
+      "icon": "electron/app-icon.ico",
       "signAndEditExecutable": false,
       "signExecutable": false,
       "target": [

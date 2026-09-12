@@ -14,7 +14,7 @@ import { createGitTools } from '../src/tools/git.js';
 import { createWorkspaceTools } from '../src/tools/workspace.js';
 import { createServer, type ConnectorServer, type ConnectorDependencies } from '../src/server.js';
 
-async function fixture(http = false, codexOverride?: CodexRunner, transportOverride?: McpTransport, defaultSkillIds: string[] = []): Promise<{ server: ConnectorServer; auth: { token: string } }> {
+async function fixture(http = false, codexOverride?: CodexRunner, transportOverride?: McpTransport, defaultSkillIds: string[] = [], emptyMcp = false): Promise<{ server: ConnectorServer; auth: { token: string } }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-'));
   const skillsRoot = path.join(root, 'skills');
   const stateDir = path.join(root, 'state');
@@ -38,7 +38,7 @@ async function fixture(http = false, codexOverride?: CodexRunner, transportOverr
       kill: () => true,
     }),
   });
-  const registry = McpRegistry.fromJson({
+  const registry = McpRegistry.fromJson(emptyMcp ? { servers: [] } : {
     servers: [{ id: 'lint', command: 'lint-server', allowedTools: ['check'] }],
   });
   const transport: McpTransport = { call: async () => ({ ok: true }) };
@@ -72,6 +72,8 @@ describe('authenticated connector', () => {
     const { server, auth } = await fixture();
     try {
       expect(await server.call('list_skills', {}, auth)).toMatchObject({ skills: [{ id: 'review' }] });
+      expect(await server.call('skills_mcp', { action: 'status' }, auth)).toMatchObject({ skills: [{ id: 'review' }], mcp_configured: true });
+      expect(await server.call('skills_mcp', { action: 'list_mcp_tools', server_id: 'lint' }, auth)).toMatchObject({ server_id: 'lint', tools: ['check'] });
       expect(await server.call('call_mcp_tool', { serverId: 'lint', tool: 'check', input: {} }, auth)).toMatchObject({ ok: true });
       const task = await server.call('codex_submit', { prompt: 'Review.', skillIds: ['review'] }, auth) as { id: string };
       expect(await server.call('codex_status', { taskId: task.id }, auth)).toMatchObject({ state: 'running' });
@@ -82,10 +84,22 @@ describe('authenticated connector', () => {
     }
   });
 
+  test('skills_mcp reports an optional empty MCP registry without blocking Skills', async () => {
+    const { server, auth } = await fixture(false, undefined, undefined, [], true);
+    try {
+      const empty = await server.call('skills_mcp', { action: 'status' }, auth);
+      expect(empty).toMatchObject({ mcp_configured: false, note: expect.stringMatching(/optional/i) });
+      const listed = await server.call('skills_mcp', { action: 'list_skills' }, auth);
+      expect(listed).toMatchObject({ skills: [{ id: 'review' }] });
+    } finally {
+      await server.close();
+    }
+  });
+
   test('uses workspace default Skills only when a task omits skillIds', async () => {
-    const submitted: Array<{ prompt: string; skillIds: string[] }> = [];
+    const submitted: Array<{ prompt: string; skillIds: string[]; skillSelection?: 'auto' | 'explicit' }> = [];
     const codex = {
-      submit: async (request: { prompt: string; skillIds: string[] }) => {
+      submit: async (request: { prompt: string; skillIds: string[]; skillSelection?: 'auto' | 'explicit' }) => {
         submitted.push(request);
         return { id: '00000000-0000-0000-0000-000000000001', state: 'running', createdAt: '', updatedAt: '' };
       },
@@ -97,9 +111,32 @@ describe('authenticated connector', () => {
       await server.call('codex_submit', { prompt: 'Choose other.', skillIds: ['other'] }, auth);
 
       expect(submitted).toEqual([
-        { prompt: 'Inspect.', skillIds: ['review'] },
-        { prompt: 'Override.', skillIds: [] },
-        { prompt: 'Choose other.', skillIds: ['other'] },
+        { prompt: 'Inspect.', skillIds: ['review'], skillSelection: 'auto' },
+        { prompt: 'Override.', skillIds: [], skillSelection: 'explicit' },
+        { prompt: 'Choose other.', skillIds: ['other'], skillSelection: 'explicit' },
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('agent workflow loads Skill metadata by default and full instructions when explicit', async () => {
+    const submitted: Array<{ prompt: string; skillIds: string[]; skillSelection?: 'auto' | 'explicit' }> = [];
+    const codex = {
+      submit: async (request: { prompt: string; skillIds: string[]; skillSelection?: 'auto' | 'explicit' }) => {
+        submitted.push(request);
+        return { id: '00000000-0000-0000-0000-000000000002', state: 'running', createdAt: '', updatedAt: '' };
+      },
+    };
+    const { server, auth } = await fixture(false, codex as unknown as CodexRunner, undefined, ['review']);
+    try {
+      await server.call('agent_workflow', { objective: 'Inspect.', phase: 'execute' }, auth);
+      await server.call('agent_workflow', { objective: 'Use review.', phase: 'execute', skill_ids: ['review'] }, auth);
+      await server.call('agent_workflow', { objective: 'No skills.', phase: 'execute', skill_ids: [] }, auth);
+      expect(submitted).toEqual([
+        { prompt: 'Inspect.', skillIds: ['review'], skillSelection: 'auto' },
+        { prompt: 'Use review.', skillIds: ['review'], skillSelection: 'explicit' },
+        { prompt: 'No skills.', skillIds: [], skillSelection: 'explicit' },
       ]);
     } finally {
       await server.close();
@@ -168,12 +205,82 @@ describe('authenticated connector', () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      const readFile = listed.tools.find((tool) => tool.name === 'read_file');
-      expect(readFile?.inputSchema).toMatchObject({ required: ['relativePath'] });
-      const result = await client.callTool({ name: 'list_directory', arguments: { relativePath: '.' } });
+      expect(listed.tools.some((tool) => tool.name === 'skills')).toBe(true);
+      expect(listed.tools.some((tool) => tool.name === 'mcp')).toBe(true);
+      expect(listed.tools.some((tool) => tool.name === 'skills_mcp')).toBe(false);
+      const workspaceContext = listed.tools.find((tool) => tool.name === 'workspace_context');
+      expect(workspaceContext?.description).toMatch(/Preferred read-only tool/i);
+      expect(workspaceContext?.inputSchema).toMatchObject({ properties: { detail: expect.any(Object), max_entries: expect.any(Object) } });
+      expect(listed.tools.find((tool) => tool.name === 'agent_workflow')?.inputSchema).toMatchObject({ properties: { objective: expect.any(Object), phase: expect.any(Object) } });
+      expect(listed.tools.find((tool) => tool.name === 'coding_tools_guide')?.outputSchema).toBeDefined();
+      const result = await client.callTool({ name: 'workspace_context', arguments: { path: '.', max_entries: 10, detail: 'compact' } });
       expect(result.isError).not.toBe(true);
     } finally {
       await client.close();
+      await server.close();
+    }
+  });
+
+  test('keeps Skills and optional MCP as separate public tools', async () => {
+    const { server, auth } = await fixture(false, undefined, undefined, [], true);
+    try {
+      expect(await server.call('coding_tools_guide', {}, auth)).toMatchObject({
+        preferred_flow: ['workspace_context', 'agent_workflow', 'task_control', 'skills', 'mcp'],
+      });
+      expect(await server.call('skills', { action: 'list' }, auth)).toMatchObject({ skills: [{ id: 'review' }] });
+      expect(await server.call('mcp', { action: 'status' }, auth)).toMatchObject({ configured: false, optional: true });
+      expect(await server.call('skills_mcp', { action: 'list_skills' }, auth)).toMatchObject({ skills: [{ id: 'review' }] });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('returns downstream MCP input schemas so ChatGPT can call discovered tools', async () => {
+    const transport: McpTransport = {
+      call: async () => ({ ok: true }),
+      listTools: async () => [{
+        name: 'stata_run_dofile',
+        description: 'Run a do-file and create a visible Stata session.',
+        inputSchema: { type: 'object', properties: { path: { type: 'string' }, session_id: { type: 'string' } }, required: ['path'] },
+      }],
+    };
+    const { server, auth } = await fixture(false, undefined, transport);
+    try {
+      expect(await server.call('mcp', { action: 'list_tools', server_id: 'lint' }, auth)).toMatchObject({
+        tools: [{ name: 'stata_run_dofile', inputSchema: { required: ['path'] } }],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('explains how ChatGPT must create the first Stata GUI session', async () => {
+    const registry = McpRegistry.fromJson({ servers: [{ id: 'stata', command: 'stata-gui-mcp', args: [], allowedTools: ['stata_run_dofile'] }] });
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-stata-guide-'));
+    const skills = await SkillCatalog.create(root);
+    const paths = await createPathPolicy(root);
+    const tasks = new TaskStore(path.join(root, 'state'));
+    const server = await createServer({
+      token: 'secret', workspace: createWorkspaceTools(root, paths), git: createGitTools(root, paths), skills,
+      mcp: registry,
+      mcpTransport: { call: async () => ({}), listTools: async () => [{ name: 'stata_run_dofile', inputSchema: { type: 'object', required: ['path'] } }] },
+      codex: {} as CodexRunner, tasks,
+    } as ConnectorDependencies);
+    try {
+      expect(await server.call('mcp', { action: 'list_tools', server_id: 'stata' }, { token: 'secret' })).toMatchObject({
+        usage_note: expect.stringMatching(/first visible Stata GUI session.*absolute \.do path/i),
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('does not reject an authenticated Streamable HTTP GET probe as an unknown route', async () => {
+    const { server } = await fixture(true);
+    const address = new URL(server.httpAddress!);
+    try {
+      await expect(getMcpProbe(address)).resolves.not.toBe(404);
+    } finally {
       await server.close();
     }
   });
@@ -234,7 +341,7 @@ describe('authenticated connector', () => {
       requestInit: { headers: { authorization: 'Bearer secret' } },
     });
     await client.connect(clientTransport);
-    const pending = client.callTool({ name: 'call_mcp_tool', arguments: { serverId: 'lint', tool: 'check', input: {} } }).catch(() => undefined);
+    const pending = client.callTool({ name: 'mcp', arguments: { action: 'call_tool', server_id: 'lint', tool: 'check', input: {} } }).catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 30));
     await client.close();
     for (let attempt = 0; attempt < 20 && !observedAbort; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -258,5 +365,22 @@ function postMcp(address: URL, body: string): Promise<number> {
     });
     request.once('error', reject);
     request.end(body);
+  });
+}
+
+function getMcpProbe(address: URL): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: address.hostname,
+      port: Number(address.port),
+      path: address.pathname,
+      method: 'GET',
+      headers: { authorization: 'Bearer secret', accept: 'text/event-stream' },
+    }, (response) => {
+      resolve(response.statusCode ?? 0);
+      response.destroy();
+    });
+    request.once('error', reject);
+    request.end();
   });
 }

@@ -48,6 +48,19 @@ describe('SkillCatalog', () => {
     await expect(catalog.read('../outside')).rejects.toThrow('Unknown skill');
   });
 
+  test('lists and reads a skill from a trusted bundled skills directory', async () => {
+    const skillsRoot = await makeSkillsRoot();
+    const bundledSkill = path.join(skillsRoot, 'superpowers', 'skills', 'brainstorming');
+    await mkdir(bundledSkill, { recursive: true });
+    await writeFile(path.join(bundledSkill, 'SKILL.md'), '---\nname: brainstorming\ndescription: Explore the design.\n---\n\nPlan first.\n');
+    const catalog = await SkillCatalog.create(skillsRoot);
+
+    await expect(catalog.list()).resolves.toEqual([
+      { id: 'superpowers-brainstorming', name: 'brainstorming', description: 'Explore the design.' },
+    ]);
+    await expect(catalog.read('superpowers-brainstorming')).resolves.toMatchObject({ content: 'Plan first.\n' });
+  });
+
   test('rejects malformed frontmatter and does not expose an outside symlink', async () => {
     const skillsRoot = await makeSkillsRoot();
     const outside = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-outside-'));

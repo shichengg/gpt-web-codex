@@ -47,6 +47,13 @@ class RuntimeClient {
     const response = await this.runtime.call('codex_cancel', { taskId: id });
     return sanitizeTask(id, response, undefined, this.maxTextLength);
   }
+
+  async mcpTools(serverId) {
+    if (typeof serverId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(serverId)) throw new TypeError('MCP server ID is invalid');
+    const response = await this.runtime.call('mcp', { action: 'list_tools', server_id: serverId });
+    const tools = response && typeof response === 'object' && Array.isArray(response.tools) ? response.tools : [];
+    return tools.slice(0, 128).filter((tool) => tool && typeof tool.name === 'string').map((tool) => ({ name: tool.name.slice(0, 128), ...(typeof tool.description === 'string' ? { description: redactAndBound(tool.description, this.maxTextLength) } : {}) }));
+  }
 }
 
 function boundedOption(value, fallback, minimum, maximum, name) {

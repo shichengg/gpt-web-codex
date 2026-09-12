@@ -132,6 +132,43 @@ describe('CodexRunner', () => {
     expect(spawnCalls[0].args.join(' ')).toContain('Use review checks.');
   });
 
+  test('auto Skill selection sends descriptions without injecting the full SKILL.md body', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    await mkdir(path.join(skillsRoot, 'review'));
+    await writeFile(path.join(skillsRoot, 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code safely.\n---\nReview instructions that should be loaded only on demand.\n');
+    let spawnedPrompt = '';
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store: new TaskStore(stateDir),
+      spawn: (_command, args) => { spawnedPrompt = args[2]; return fakeChild(); },
+    });
+
+    await runner.submit({ prompt: 'Inspect the project.', skillIds: ['review'], skillSelection: 'auto' });
+
+    expect(spawnedPrompt).toContain('Review code safely.');
+    expect(spawnedPrompt).toContain('read the Skill instructions only when the task requires it');
+    expect(spawnedPrompt).not.toContain('Review instructions that should be loaded only on demand.');
+  });
+
+  test('auto Skill selection rejects IDs that are not in the catalog', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));
+    const skillsRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-skills-'));
+    roots.push(workspaceRoot, stateDir, skillsRoot);
+    const runner = new CodexRunner({
+      workspaceRoot,
+      catalog: await SkillCatalog.create(skillsRoot),
+      store: new TaskStore(stateDir),
+      spawn: () => { throw new Error('must not spawn'); },
+    });
+
+    await expect(runner.submit({ prompt: 'Inspect.', skillIds: ['missing'], skillSelection: 'auto' })).rejects.toThrow('Unknown skill');
+  });
+
   test('rejects skills that are not in the catalog before spawning', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-workspace-'));
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-state-'));

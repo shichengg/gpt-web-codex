@@ -96,6 +96,8 @@ test('runs a profile lifecycle with default Skills, fixed activity calls, and cl
     target: 'http://127.0.0.1:48999/mcp',
     connectorName: 'GPT Web Codex',
     credentials,
+    healthPort: 18081,
+    mcpToken: 'private-runtime-token-123456',
   }]);
 
   await controller.stop();

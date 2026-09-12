@@ -126,6 +126,18 @@ test('profile service and IPC reject an out-of-workspace Skills root', async (t)
   );
 });
 
+test('accepts a real nested Skills bundle beneath the workspace .codex/skills root', async (t) => {
+  const { root, store } = await makeProfileStore();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = await makeWorkspace(root, 'workspace');
+  const bundledSkills = path.join(workspace.skillsRoot, 'superpowers', 'skills');
+  await fs.mkdir(bundledSkills, { recursive: true });
+
+  await store.save({ id: 'bundle', workspaceRoot: workspace.workspaceRoot, skillsRoot: bundledSkills, enabledSkillIds: [] });
+
+  assert.equal((await store.get('bundle')).skillsRoot, await fs.realpath(bundledSkills));
+});
+
 test('rejects a .codex parent junction whose canonical Skills root escapes the workspace', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-parent-link-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -180,6 +192,10 @@ test('active profile defaults are catalog-validated before private persistence',
   const snapshot = await controller.saveSkills(['review']);
 
   assert.deepEqual((await controller.listProfiles())[0].enabledSkillIds, ['review']);
-  assert.deepEqual(snapshot.preferences, { language: 'zh-CN', theme: 'system', guideDismissedSteps: [] });
+  assert.deepEqual(snapshot.preferences, {
+    language: 'zh-CN', theme: 'system', proxyMode: 'auto', proxyUrl: '',
+    startAtLogin: false, autoStartServices: true, keepRunningOnClose: true,
+    guideDismissedSteps: [],
+  });
   assert.equal(snapshot.guide[1].status, 'complete');
 });

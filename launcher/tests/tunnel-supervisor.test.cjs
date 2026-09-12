@@ -13,6 +13,11 @@ function assertDefaultUiState(snapshot, profileStatus = 'complete') {
   assert.deepEqual(snapshot.preferences, {
     language: 'zh-CN',
     theme: 'system',
+    proxyMode: 'auto',
+    proxyUrl: '',
+    startAtLogin: false,
+    autoStartServices: true,
+    keepRunningOnClose: true,
     guideDismissedSteps: [],
   });
   assert.deepEqual(snapshot.guide, [
@@ -195,6 +200,10 @@ test('starts the runtime before pairing and stops the tunnel before the runtime'
     runtimeSupervisor: runtime,
     tunnelSupervisor: tunnel,
     connectorIdentity: identity,
+    proxyResolver: async () => ({
+      mode: 'auto', source: 'auto-local', reachable: true, configured: true,
+      proxyUrl: 'http://127.0.0.1:7890',
+    }),
   });
   await controller.saveProfile({ id: 'one', workspaceRoot, skillsRoot, enabledSkillIds: [] });
   await controller.setActiveProfile('one');
@@ -203,7 +212,7 @@ test('starts the runtime before pairing and stops the tunnel before the runtime'
 
   assert.deepEqual(calls.slice(-2), [
     'runtime-start',
-    ['tunnel-connect', { runtimeUrl, connectorName }],
+    ['tunnel-connect', { runtimeUrl, connectorName, proxyUrl: 'http://127.0.0.1:7890' }],
   ]);
   assert.equal(started.tunnelState, 'running');
   assert.equal(started.connectorName, connectorName);
@@ -286,6 +295,7 @@ test('stops the paired tunnel and publishes a safe snapshot when the owned runti
     tunnelConfigured: true,
     paired: false,
     connectorName,
+    proxy: { mode: 'auto', source: 'auto-direct', reachable: true, configured: false },
   });
   assertDefaultUiState({ preferences, guide });
   assert.equal(JSON.stringify(published).includes(credentials.runtimeKey), false);
@@ -338,6 +348,7 @@ test('does not persist or retain a newly entered setup when pairing fails', asyn
     tunnelConfigured: false,
     paired: false,
     connectorName,
+    proxy: { mode: 'auto', source: 'auto-direct', reachable: true, configured: false },
   });
   assertDefaultUiState({ preferences, guide }, 'needs-action');
   const saved = await fs.readFile(path.join(root, 'connector.json'), 'utf8').catch((error) => {

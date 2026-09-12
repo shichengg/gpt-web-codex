@@ -10,13 +10,14 @@ const asar = require('@electron/asar');
 const packageJson = require('../package.json');
 const { AUDITED_CORE_FILES, prepareCore } = require('../scripts/prepare-core.cjs');
 const { Arch, Platform } = require('electron-builder');
-const { PACKAGE_BUILD_OPTIONS, windowsTargets } = require('../scripts/package.cjs');
+const { PACKAGE_BUILD_OPTIONS, assertTunnelClient, windowsTargets } = require('../scripts/package.cjs');
 const {
-  assertPackagedChatGptWindowController,
+  assertNoPackagedChatGptBrowser,
   assertPackagedCoreAssets,
+  assertPackagedTunnelClient,
   resolvePackagedExecutable,
 } = require('../scripts/smoke-package.cjs');
-const { verifyCoreRuntimeLoadability } = require('../electron/main.cjs');
+const { tunnelExecutableForApp, verifyCoreRuntimeLoadability } = require('../electron/main.cjs');
 
 test('Windows package targets a per-user NSIS installer and audited core resources', () => {
   assert.equal(packageJson.build.asar, true);
@@ -27,36 +28,65 @@ test('Windows package targets a per-user NSIS installer and audited core resourc
   assert.equal(packageJson.build.win.signExecutable, false);
   assert.equal(packageJson.build.win.target.includes('nsis'), true);
   assert.equal(packageJson.build.nsis.perMachine, false);
-  assert.deepEqual(packageJson.build.extraResources, [
+  assert.deepEqual(packageJson.build.extraResources.slice(0, 2), [
     { from: '.package/core', to: 'core', filter: ['**/*', '!node_modules{,/**/*}'] },
     { from: '.package/core/node_modules', to: 'core/node_modules', filter: ['**/*'] },
   ]);
+  assert.deepEqual(packageJson.build.extraResources[2], {
+    from: 'resources/tools/tunnel-client.exe',
+    to: 'tools/tunnel-client.exe',
+  });
   assert.equal(packageJson.scripts['package:win'], 'node scripts/package.cjs');
   assert.equal(packageJson.scripts['smoke:package'], 'node scripts/smoke-package.cjs');
 });
 
-test('package keeps the ChatGPT window controller in ASAR and documents session isolation', async () => {
+test('packaged Tunnel path matches electron-builder extraResources destination', () => {
+  const previousResourcesPath = process.resourcesPath;
+  process.resourcesPath = 'C:\\Program Files\\GPT Web Codex\\resources';
+  try {
+    assert.equal(
+      tunnelExecutableForApp({ isPackaged: true }),
+      'C:\\Program Files\\GPT Web Codex\\resources\\tools\\tunnel-client.exe',
+    );
+  } finally {
+    process.resourcesPath = previousResourcesPath;
+  }
+});
+
+test('packaging preflight requires the bundled Tunnel client', async () => {
+  const tunnelPath = await assertTunnelClient();
+  assert.match(tunnelPath, /resources[\\/]tools[\\/]tunnel-client\.exe$/i);
+});
+
+test('packaging includes the tray icon assets used by the reference startup mode', async () => {
+  const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.ok(packageJson.build.files.includes('electron/app-icon.png'));
+  assert.ok(packageJson.build.files.includes('electron/app-icon.ico'));
+});
+
+test('packaging and backend settings use the GPT Web Codex icon', async () => {
+  const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.equal(packageJson.build.win.icon, 'electron/app-icon.ico');
+  const main = await fs.readFile(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  assert.match(main, /app-icon\.png/);
+});
+
+test('package excludes the embedded ChatGPT browser and keeps backend resources', async () => {
   const launcherDirectory = path.join(__dirname, '..');
   const repositoryDirectory = path.join(launcherDirectory, '..');
   const readme = await fs.readFile(path.join(repositoryDirectory, 'README.md'), 'utf8');
   const packagedFiles = packageJson.build.files;
   const packageConfig = JSON.stringify(packageJson.build);
 
-  assert.equal(
-    packagedFiles.some((pattern) => pattern === 'electron/*.cjs'),
-    true,
-    'The ASAR input must include electron/chatgpt-window.cjs.',
-  );
-  await fs.access(path.join(launcherDirectory, 'electron', 'chatgpt-window.cjs'));
+  assert.equal(packagedFiles.some((pattern) => pattern === 'electron/*.cjs'), false);
+  assert.equal(packagedFiles.some((pattern) => /chatgpt-window|browser-shell/i.test(pattern)), false);
   assert.equal(
     packageConfig.includes('chatgpt-session') || packageConfig.includes('chatgpt-session-data'),
     false,
     'ChatGPT session storage must never be an extra packaged resource.',
   );
-  assert.match(readme, /独立 ChatGPT 窗口/);
-  assert.match(readme, /清除 ChatGPT 登录状态/);
-  assert.match(readme, /不读取、显示、导出.*Cookie/);
-  assert.match(readme, /兼容 Tunnel 客户端/);
+  assert.doesNotMatch(readme, /独立 ChatGPT 窗口|清除 ChatGPT 登录状态/);
+  assert.match(readme, /内置 Tunnel 客户端/);
   assert.match(packageConfig, /asar/);
 });
 
@@ -131,26 +161,31 @@ test('smoke package check requires the audited core entrypoint and runtime depen
   await assert.rejects(() => assertPackagedCoreAssets(path.join(artifacts, 'win-unpacked')), /runtime dependency/i);
 });
 
-test('smoke package check requires the ChatGPT window controller in the packaged ASAR', async (t) => {
+test('smoke package check requires the Tunnel client at the runtime path', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-tunnel-package-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'resources', 'tools'), { recursive: true });
+  await fs.writeFile(path.join(root, 'resources', 'tools', 'tunnel-client.exe'), 'fixture');
+  await assertPackagedTunnelClient(root);
+});
+
+test('smoke package check rejects embedded ChatGPT browser files', async (t) => {
   const artifacts = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-web-codex-chatgpt-asar-'));
   t.after(() => fs.rm(artifacts, { recursive: true, force: true }));
   const source = path.join(artifacts, 'source');
   const appAsar = path.join(artifacts, 'win-unpacked', 'resources', 'app.asar');
   await fs.mkdir(path.join(source, 'electron'), { recursive: true });
-  await fs.writeFile(path.join(source, 'electron', 'chatgpt-window.cjs'), 'module.exports = {};');
+  await fs.writeFile(path.join(source, 'electron', 'main.cjs'), 'module.exports = {};');
   await fs.mkdir(path.dirname(appAsar), { recursive: true });
   await asar.createPackage(source, appAsar);
 
-  await assertPackagedChatGptWindowController(path.join(artifacts, 'win-unpacked'));
-  await fs.rm(path.join(source, 'electron', 'chatgpt-window.cjs'));
-  const emptyAppOut = path.join(artifacts, 'empty-app', 'resources');
-  const emptyAsar = path.join(emptyAppOut, 'app.asar');
-  await fs.mkdir(emptyAppOut, { recursive: true });
-  await asar.createPackage(source, emptyAsar);
-  await assert.rejects(
-    () => assertPackagedChatGptWindowController(path.join(artifacts, 'empty-app')),
-    /ChatGPT window controller/i,
-  );
+  await assertNoPackagedChatGptBrowser(path.join(artifacts, 'win-unpacked'));
+  await fs.writeFile(path.join(source, 'electron', 'chatgpt-window.cjs'), 'module.exports = {};');
+  const embeddedOut = path.join(artifacts, 'embedded-app');
+  const embeddedAsar = path.join(embeddedOut, 'resources', 'app.asar');
+  await fs.mkdir(path.dirname(embeddedAsar), { recursive: true });
+  await asar.createPackage(source, embeddedAsar);
+  await assert.rejects(() => assertNoPackagedChatGptBrowser(embeddedOut), /embedded ChatGPT browser/i);
 });
 
 test('diagnostic core probe runs the packaged core without NODE_PATH fallback', async () => {
