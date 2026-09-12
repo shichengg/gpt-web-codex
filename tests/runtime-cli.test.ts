@@ -46,7 +46,10 @@ test('emits one secret-free IPv6 runtime-ready record on stdout', async () => {
 });
 
 async function waitFor(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // Full parallel suites can make vite-node startup exceed two seconds on
+  // Windows; keep polling the actual readiness condition instead of racing a
+  // machine-load-dependent fixed threshold.
+  for (let attempt = 0; attempt < 500; attempt += 1) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
